@@ -1,5 +1,6 @@
 # Fork only (schugazi/herdr-app): builds this checkout with CI's toolchain and
-# installs it over the app (install-windows.ps1). -Test runs the tests first.
+# installs it over the app (install-windows.ps1). -Test runs the tests first
+# (a new target under tests/ needs adding to its list).
 # A build from source never updates itself or the cores: update by hand.
 param([switch]$Test)
 $ErrorActionPreference = "Stop"
@@ -11,7 +12,8 @@ try {
     git submodule update --init --recursive
     if ($LASTEXITCODE) { throw "submodule update failed (exit $LASTEXITCODE)." }
     if ($Test) {
-        cargo test --locked
+        # Every target but shot_pixels, which opens a real window: an SSH session has no desktop.
+        cargo test --locked --lib --bins --test commands --test notices --test skill
         if ($LASTEXITCODE) { throw "tests failed (exit $LASTEXITCODE)." }
     }
 } finally {
