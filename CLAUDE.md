@@ -1,0 +1,7 @@
+# Personal fork of Herdr (the desktop app)
+
+Fork `schugazi/herdr-app` of upstream `herdrdev/herdr-app`; read upstream's `AGENTS.md` for the code. Edited in `~/herdr-app` on mycroftxxx (branch `master`), built and installed on multivac from `C:\Users\nmsch\herdr-app` with `scripts/fork-install.ps1` (CI's toolchain: Rust 1.95.0, Zig 0.16.0 in `%LOCALAPPDATA%\Programs`, LLVM for bindgen, VS Build Tools). This host can't build it (no GUI dev packages here).
+
+The fork adds settings.json `cursor_style`, `cursor_blink` and `cursor_thickness` (the terminal cursor's default, its blink, its thickness; `src/vt.rs`, `src/terminal.rs`, `defaults/AGENTS.md`). Fork-only files: this one, `scripts/fork-install.ps1`, `.claude/skills/sync-upstream/`.
+
+A build from source never updates itself or any core, so updates are by hand: take upstream's latest release tag by merge, never rebase and never `upstream/master`, via `/sync-upstream`. Host setup and the cores: `~/.local/share/herdr-app/README.md` on mycroftxxx.
