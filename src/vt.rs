@@ -1,6 +1,7 @@
 //! Herdr's view of a core terminal: libghostty-vt fed with the relayed bytes,
 //! read back as frames to draw, and asked to encode keys and mouse input.
 
+use crate::settings::CursorStyle;
 use ghostty_sys::*;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -70,6 +71,12 @@ pub fn theme() -> Theme {
     Theme { fg: get("terminal_foreground"), bg: get("background"), cursor: get("cursor"), selection_bg: get("selection"), palette16, minimum_contrast: crate::settings::get().minimum_contrast }
 }
 
+/// settings.json's cursor for programs that don't pick one: (style, blinks).
+pub fn cursor_default() -> (CursorStyle, bool) {
+    let s = crate::settings::get();
+    (s.cursor_style, s.cursor_blink)
+}
+
 #[derive(Clone, Default, PartialEq)]
 pub struct Cell {
     /// Empty for blank cells and for the tail half of a wide character.
@@ -97,6 +104,7 @@ pub struct Cursor {
     pub x: u16,
     pub y: u16,
     pub shape: CursorShape,
+    pub blinking: bool,
     pub color: Rgb,
 }
 
@@ -240,6 +248,8 @@ pub struct Vt {
     pub cols: u16,
     pub rows: u16,
     theme: Theme,
+    /// The cursor programs get until they pick their own: (style, blinks).
+    cursor_default: (CursorStyle, bool),
     /// The built-in 256-color palette, which the theme's 16 colors override.
     base_palette: [GhosttyColorRgb; 256],
     /// Ghostty's own click/double-click/triple-click/drag selection logic.
@@ -259,8 +269,8 @@ pub struct Vt {
     pub win32: crate::win32_keys::Win32Input,
 }
 
-/// What of the cursor a frame shows: (on screen, x, y, visible, style).
-type CursorKey = (bool, u16, u16, bool, i32);
+/// What of the cursor a frame shows: (on screen, x, y, visible, style, blinks).
+type CursorKey = (bool, u16, u16, bool, i32, bool);
 
 /// Where a link shows: (viewport row, first column, last column) per row.
 pub type Spans = Vec<(u16, u16, u16)>;
@@ -312,6 +322,8 @@ unsafe extern "C" fn on_title(_t: GhosttyTerminal, userdata: *mut c_void) {
 
 const SYNC_OUTPUT: GhosttyMode = 2026;
 const BRACKETED_PASTE: GhosttyMode = 2004;
+const CURSOR_BLINKING: GhosttyMode = 12;
+const CURSOR_VISIBLE: GhosttyMode = 25;
 const MAX_HOLD: Duration = Duration::from_millis(1000);
 const SCROLLBACK_MAX_LINES: usize = 10_000;
 // Bound memory per terminal; wide or heavily styled rows may hit this first.
@@ -388,6 +400,7 @@ impl Vt {
                 cols,
                 rows,
                 theme: theme(),
+                cursor_default: cursor_default(),
                 base_palette: colors.palette,
                 gesture,
                 press,
@@ -399,7 +412,30 @@ impl Vt {
                 win32: Default::default(),
             };
             vt.apply_theme();
+            vt.apply_cursor_default();
             vt
+        }
+    }
+
+    /// Switches the default cursor live (settings.json changed); a cursor a
+    /// program picked stays until it resets it (CSI 0 q).
+    pub fn set_cursor_default(&mut self, default: (CursorStyle, bool)) {
+        if self.cursor_default != default {
+            self.cursor_default = default;
+            self.apply_cursor_default();
+        }
+    }
+
+    fn apply_cursor_default(&mut self) {
+        let (style, blink) = self.cursor_default;
+        let style: GhosttyTerminalCursorStyle = match style {
+            CursorStyle::Block => GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK,
+            CursorStyle::Bar => GHOSTTY_TERMINAL_CURSOR_STYLE_BAR,
+            CursorStyle::Underline => GHOSTTY_TERMINAL_CURSOR_STYLE_UNDERLINE,
+        };
+        unsafe {
+            ghostty_terminal_set(self.term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &style as *const _ as *const c_void);
+            ghostty_terminal_set(self.term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blink as *const _ as *const c_void);
         }
     }
 
@@ -770,6 +806,11 @@ impl Vt {
         cfg.value
     }
 
+    /// A shown cursor the program (or settings.json's default) wants blinking.
+    pub fn cursor_blinks(&self) -> bool {
+        self.mode(CURSOR_BLINKING) && self.mode(CURSOR_VISIBLE)
+    }
+
     pub fn mouse_tracking(&self) -> bool {
         self.get_bool(GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING)
     }
@@ -822,7 +863,7 @@ impl Vt {
         unsafe {
             let mut cur = GhosttyRenderStateCursor { size: std::mem::size_of::<GhosttyRenderStateCursor>(), ..Default::default() };
             ghostty_render_state_get(self.shared.state, GHOSTTY_RENDER_STATE_DATA_CURSOR, &mut cur as *mut _ as *mut c_void);
-            let cursor = (cur.viewport_has_value, cur.viewport_x, cur.viewport_y, cur.visible, cur.visual_style as i32);
+            let cursor = (cur.viewport_has_value, cur.viewport_x, cur.viewport_y, cur.visible, cur.visual_style as i32, cur.blinking);
             let mut c = GhosttyRenderStateColors { size: std::mem::size_of::<GhosttyRenderStateColors>(), ..Default::default() };
             ghostty_render_state_get(self.shared.state, GHOSTTY_RENDER_STATE_DATA_COLORS, &mut c as *mut _ as *mut c_void);
             let mut h = std::hash::DefaultHasher::new();
@@ -914,6 +955,7 @@ impl Vt {
                     GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorShape::Hollow,
                     _ => CursorShape::Block,
                 },
+                blinking: cur.blinking,
                 color: if colors.cursor_has_value { colors.cursor.into() } else { fg_default },
             });
 
@@ -1149,6 +1191,27 @@ mod tests {
         vt.write(b"\x1b]4;1;rgb:12/34/56\x1b\\");
         let recolored = vt.frame();
         assert!(!Rc::ptr_eq(&after.rows[0], &recolored.rows[0]), "a palette change reads every row");
+    }
+
+    #[test]
+    fn the_default_cursor_gives_way_to_a_program_and_returns_on_reset() {
+        let mut vt = Vt::new(20, 4);
+        let cursor = |vt: &mut Vt| vt.frame().cursor.map(|c| (c.shape, c.blinking)).unwrap();
+        assert!(cursor(&mut vt) == (CursorShape::Block, false) && !vt.cursor_blinks());
+        vt.set_cursor_default((CursorStyle::Underline, true));
+        assert!(cursor(&mut vt) == (CursorShape::Underline, true) && vt.cursor_blinks());
+        vt.write(b"\x1b[6 q");
+        assert!(cursor(&mut vt) == (CursorShape::Bar, false) && !vt.cursor_blinks());
+        vt.write(b"\x1b[0 q");
+        assert!(cursor(&mut vt) == (CursorShape::Underline, true));
+        // A hidden cursor has nothing to blink.
+        vt.write(b"\x1b[?25l");
+        assert!(!vt.cursor_blinks());
+        // The blink alone changing still needs a frame.
+        vt.write(b"\x1b[?25h");
+        vt.frame();
+        vt.write(b"\x1b[4 q");
+        assert!(vt.shows_change());
     }
 
     #[test]

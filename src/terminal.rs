@@ -95,8 +95,16 @@ pub struct TerminalView {
     typed_at: Cell<Option<Instant>>,
     /// Scrolled this gesture, in lines, toward the next whole one.
     scrolled: f32,
+    /// A blinking cursor is in its hidden half.
+    blink_off: Cell<bool>,
+    /// The blink clock runs: only while this terminal has the window's focus
+    /// and a shown cursor that blinks.
+    blink_clock: bool,
     _reader: Option<Task<()>>,
 }
+
+/// Each half of a cursor blink.
+const BLINK: Duration = Duration::from_millis(600);
 
 thread_local! {
     /// Terminals with output waiting for the next tick of the output clock.
@@ -153,6 +161,8 @@ impl TerminalView {
             shown_in: Cell::new(0),
             typed_at: Cell::new(None),
             scrolled: 0.0,
+            blink_off: Cell::new(false),
+            blink_clock: false,
             _reader: None,
         };
         view.connect(core, false, cx);
@@ -360,6 +370,42 @@ impl TerminalView {
         }
     }
 
+    /// Whether the cursor blinks here now: the window and this terminal have
+    /// focus, and the program shows a cursor that blinks.
+    fn blinks(&self, window: &Window) -> bool {
+        self.focus.is_focused(window) && window.is_window_active() && self.grid.borrow().vt.cursor_blinks()
+    }
+
+    /// Starts the blink clock if the cursor blinks; it stops itself once it
+    /// doesn't, leaving the cursor shown. Each tick redraws only this
+    /// terminal, and only while the cursor blinks.
+    fn blink(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blink_clock || !self.blinks(window) {
+            return;
+        }
+        self.blink_clock = true;
+        cx.spawn_in(window, async |this, cx| {
+            loop {
+                cx.background_executor().timer(BLINK).await;
+                let ticking = this.update_in(cx, |this, window, cx| {
+                    let on = this.blinks(window);
+                    let typed = this.typed_at.get().is_some_and(|t| t.elapsed() < BLINK);
+                    let off = on && !typed && !this.blink_off.get();
+                    if off != this.blink_off.get() {
+                        this.blink_off.set(off);
+                        cx.notify();
+                    }
+                    this.blink_clock = on;
+                    on
+                });
+                if !matches!(ticking, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     /// The window puts this terminal on screen in the frame it's building.
     pub fn mark_shown(&self) {
         self.shown_in.set(FRAME.load(Ordering::Relaxed));
@@ -367,6 +413,8 @@ impl TerminalView {
 
     fn send(&self, bytes: &[u8]) {
         self.typed_at.set(Some(Instant::now()));
+        // The cursor shows while typing; the echo redraws it.
+        self.blink_off.set(false);
         let mut g = self.grid.borrow_mut();
         if let Some(ch) = g.channel
             && !bytes.is_empty()
@@ -952,7 +1000,8 @@ fn row_ops(row: &[vt::Cell], cell: Size<Pixels>, window: &mut Window) -> Vec<Row
     ops
 }
 
-fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, window: &mut Window, cx: &mut App) {
+/// `blink_off`: a blinking cursor is in its hidden half.
+fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, blink_off: bool, window: &mut Window, cx: &mut App) {
     crate::bench::count(&crate::bench::GRID);
     let mut g = grid.borrow_mut();
     let cell = g.cell;
@@ -1062,12 +1111,13 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
 
     paint_images(false, window);
 
-    if let Some(cur) = frame.cursor {
+    if let Some(cur) = frame.cursor.filter(|c| !(focused && blink_off && c.blinking)) {
         let (x, y) = (cur.x as usize, cur.y as usize);
         let wide = frame.rows.get(y).and_then(|r| r.get(x)).is_some_and(|c| c.wide);
         let w = cell.width * if wide { 2.0 } else { 1.0 };
         let color = hsla(cur.color);
         let p = at(x, y);
+        let thick = crate::settings::z(crate::settings::get().cursor_thickness);
         match (focused, cur.shape) {
             (true, CursorShape::Block) => {
                 window.paint_quad(fill(snap_box(Bounds::new(p, size(w, cell.height))), color));
@@ -1084,11 +1134,11 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, w
                     let _ = line.paint(p, cell.height, TextAlign::Left, None, window, cx);
                 }
             }
-            (true, CursorShape::Bar) => window.paint_quad(fill(snap_box(Bounds::new(p, size(px(2.0), cell.height))), color)),
-            (true, CursorShape::Underline) => window.paint_quad(fill(
-                snap_box(Bounds::new(p + point(px(0.0), cell.height - px(2.0)), size(w, px(2.0)))),
-                color,
-            )),
+            (true, CursorShape::Bar) => window.paint_quad(fill(snap_box(Bounds::new(p, size(thick.min(w), cell.height))), color)),
+            (true, CursorShape::Underline) => {
+                let thick = thick.min(cell.height);
+                window.paint_quad(fill(snap_box(Bounds::new(p + point(px(0.0), cell.height - thick), size(w, thick))), color))
+            }
             _ => window.paint_quad(outline(snap_box(Bounds::new(p, size(w, cell.height))), color, BorderStyle::Solid)),
         }
     }
@@ -1179,6 +1229,9 @@ impl Render for TerminalView {
                 g.core.focus(ch, focused);
             }
         }
+        self.blink(window, cx);
+        // Shown at once when the window or the terminal loses focus.
+        let blink_off = self.blink_off.get() && self.blinks(window);
         let cell = cell_size(window);
         let hover = self.grid.borrow().hover;
         let found = hover.filter(|_| link_mods(&window.modifiers())).and_then(|pos| self.link_at(pos));
@@ -1280,6 +1333,7 @@ impl Render for TerminalView {
                     move |bounds, _window, _cx| {
                         let mut g = grid.borrow_mut();
                         g.vt.set_theme(vt::theme());
+                        g.vt.set_cursor_default(vt::cursor_default());
                         g.cell = cell;
                         let (px_, py_) = pad();
                         let cols = ((f32::from(bounds.size.width) - 2.0 * px_) / f32::from(cell.width)).floor().max(2.0) as u16;
@@ -1296,7 +1350,7 @@ impl Render for TerminalView {
                         }
                     },
                     move |bounds, _, window, cx| {
-                        paint_grid(bounds, &grid_paint, focused, window, cx);
+                        paint_grid(bounds, &grid_paint, focused, blink_off, window, cx);
                         // While focused, the OS input methods (Pinyin, Japanese,
                         // dead keys) type into this terminal.
                         if focused {

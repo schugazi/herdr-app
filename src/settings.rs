@@ -392,6 +392,14 @@ pub struct Person {
     /// macOS Option sends Alt shortcuts, or follows the keyboard layout.
     #[serde(skip_serializing_if = "OptionAsAlt::is_auto")]
     pub option_as_alt: OptionAsAlt,
+    /// The terminal cursor until a program picks its own (DECSCUSR).
+    #[serde(skip_serializing_if = "CursorStyle::is_block")]
+    pub cursor_style: CursorStyle,
+    #[serde(skip_serializing_if = "is_false")]
+    pub cursor_blink: bool,
+    /// The bar's width and the underline's height, in px.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_thickness: Option<f32>,
     /// Light or dark: the system's, or one always.
     #[serde(skip_serializing_if = "Appearance::is_system")]
     pub appearance: Appearance,
@@ -431,8 +439,27 @@ impl OptionAsAlt {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorStyle {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
+impl CursorStyle {
+    fn is_block(&self) -> bool {
+        *self == Self::Block
+    }
+}
+
 fn is_true(b: &bool) -> bool {
     *b
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Default for Person {
@@ -448,6 +475,9 @@ impl Default for Person {
             clipboard_write: true,
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
+            cursor_style: CursorStyle::Block,
+            cursor_blink: false,
+            cursor_thickness: None,
             appearance: Appearance::System,
             theme: None,
             colors: BTreeMap::new(),
@@ -482,6 +512,9 @@ pub struct Settings {
     pub clipboard_write: bool,
     pub minimum_contrast: f32,
     pub option_as_alt: OptionAsAlt,
+    pub cursor_style: CursorStyle,
+    pub cursor_blink: bool,
+    pub cursor_thickness: f32,
     pub sounds: Sounds,
 }
 
@@ -522,6 +555,9 @@ impl Default for Settings {
             clipboard_write: true,
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
+            cursor_style: CursorStyle::Block,
+            cursor_blink: false,
+            cursor_thickness: 2.0,
             sounds: Sounds::default(),
         }
     }
@@ -559,6 +595,9 @@ impl Settings {
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             option_as_alt: person.option_as_alt,
+            cursor_style: person.cursor_style,
+            cursor_blink: person.cursor_blink,
+            cursor_thickness: person.cursor_thickness.unwrap_or(d.cursor_thickness),
         }
     }
 }
@@ -608,6 +647,9 @@ impl Settings {
         }
         if !(6.0..=72.0).contains(&self.font_size) {
             out.push(format!("font_size {} is outside 6..72", self.font_size));
+        }
+        if !(1.0..=10.0).contains(&self.cursor_thickness) {
+            out.push(format!("cursor_thickness {} is outside 1..10", self.cursor_thickness));
         }
         out
     }
@@ -858,6 +900,22 @@ mod tests {
             assert_eq!(serde_json::to_value(settings).unwrap()["option_as_alt"], value);
         }
         assert!(serde_json::from_value::<Person>(serde_json::json!({"option_as_alt": "left"})).is_err());
+    }
+
+    #[test]
+    fn cursor_defaults_to_a_steady_block_and_validates_the_thickness() {
+        let default: Person = serde_json::from_str("{}").unwrap();
+        let settings = Settings::compose(&default, &crate::layout::Look::default(), true);
+        assert_eq!((settings.cursor_style, settings.cursor_blink, settings.cursor_thickness), (CursorStyle::Block, false, 2.0));
+        let saved = serde_json::to_value(&default).unwrap();
+        assert!(saved.get("cursor_style").is_none() && saved.get("cursor_blink").is_none() && saved.get("cursor_thickness").is_none());
+        let person: Person = serde_json::from_value(serde_json::json!({"cursor_style": "underline", "cursor_blink": true, "cursor_thickness": 4})).unwrap();
+        let settings = Settings::compose(&person, &crate::layout::Look::default(), true);
+        assert_eq!((settings.cursor_style, settings.cursor_blink, settings.cursor_thickness), (CursorStyle::Underline, true, 4.0));
+        assert!(settings.problems().is_empty());
+        let thick = Settings { cursor_thickness: 20.0, ..settings };
+        assert_eq!(thick.problems(), ["cursor_thickness 20 is outside 1..10"]);
+        assert!(serde_json::from_value::<Person>(serde_json::json!({"cursor_style": "hollow"})).is_err());
     }
 
     #[test]
