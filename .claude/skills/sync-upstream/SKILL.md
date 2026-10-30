@@ -48,16 +48,18 @@ ssh multivac 'cd /d %USERPROFILE%\herdr-app && git fetch -q origin && git checko
 ssh multivac 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\herdr-app\scripts\fork-install.ps1 -Test'
 ```
 
-The first full build takes a while: run the last command in the background. The script installs only after the tests pass. A failure here installs nothing: fix it (that is still yours) or stop, and put multivac's checkout back with `git checkout -q -B master origin/master`.
+A full build takes a while: run the last command in the background. The script installs only after the tests pass and the build is done, and only while Herdr is closed: when it stops with "Built. Quit Herdr", ask the user to quit Herdr, then run it again without `-Test` (it installs in seconds). A failure here installs nothing: fix it (that is still yours) or stop, and put multivac's checkout back with `git fetch -q origin && git checkout -q -B master origin/master`.
 
 ## 5. Publish and bring the cores along
 
 ```bash
 git push origin HEAD:master && git push origin --delete sync
-ssh multivac 'cd /d %USERPROFILE%\herdr-app && git checkout -q -B master origin/master'
+ssh multivac 'cd /d %USERPROFILE%\herdr-app && git fetch -q --prune origin && git checkout -q -B master origin/master && git rev-parse HEAD'
 ```
 
-Then every core to the matching version (the app no longer updates them): Windows `ssh multivac hc update`; mycroftxxx and WSL as in `~/.local/share/herdr-app/README.md` "Updates". Running terminals keep running. Tell the user to quit and reopen Herdr to load the new build.
+The printed hash must be the merge you pushed (`git rev-parse HEAD` here).
+
+Then every core to the matching version (the app no longer updates them): Windows `ssh multivac hc update`; mycroftxxx and WSL as in `~/.local/share/herdr-app/README.md` "Updates". Running terminals keep running. The user reopens Herdr on the new build.
 
 Finish with a short report: the tag merged, conflicts and their resolutions, astra's findings (applied or rejected), test and install results, the core versions (`ssh multivac hc machine ls`).
 

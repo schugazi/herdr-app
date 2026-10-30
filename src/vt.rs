@@ -811,6 +811,12 @@ impl Vt {
         self.mode(CURSOR_BLINKING) && self.mode(CURSOR_VISIBLE)
     }
 
+    /// The last frame showed the cursor (not scrolled off, not hidden).
+    pub fn cursor_on_screen(&self) -> bool {
+        let (on_screen, _, _, visible, _, _) = self.drawn.0;
+        on_screen && visible
+    }
+
     pub fn mouse_tracking(&self) -> bool {
         self.get_bool(GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING)
     }
@@ -1204,9 +1210,11 @@ mod tests {
         assert!(cursor(&mut vt) == (CursorShape::Bar, false) && !vt.cursor_blinks());
         vt.write(b"\x1b[0 q");
         assert!(cursor(&mut vt) == (CursorShape::Underline, true));
+        assert!(vt.cursor_on_screen());
         // A hidden cursor has nothing to blink.
         vt.write(b"\x1b[?25l");
-        assert!(!vt.cursor_blinks());
+        vt.frame();
+        assert!(!vt.cursor_blinks() && !vt.cursor_on_screen());
         // The blink alone changing still needs a frame.
         vt.write(b"\x1b[?25h");
         vt.frame();

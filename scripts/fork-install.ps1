@@ -1,6 +1,6 @@
 # Fork only (schugazi/herdr-app): builds this checkout with CI's toolchain and
-# installs it over the app (install-windows.ps1). -Test runs the tests first
-# (a new target under tests/ needs adding to its list).
+# installs it over the app (install-windows.ps1) once Herdr is closed. -Test
+# runs the tests first (a new target under tests/ needs adding to its list).
 # A build from source never updates itself or the cores: update by hand.
 param([switch]$Test)
 $ErrorActionPreference = "Stop"
@@ -16,10 +16,19 @@ try {
         cargo test --locked --bins --test commands --test notices --test skill
         if ($LASTEXITCODE) { throw "tests failed (exit $LASTEXITCODE)." }
     }
+    # Built before the app must close; install-windows.ps1 finds it built.
+    cargo build --release --locked --target-dir target
+    if ($LASTEXITCODE) { throw "build failed (exit $LASTEXITCODE)." }
 } finally {
     Pop-Location
 }
-# A release update the old app staged would replace this build when it quits.
+# A running release app may stage an update and swap it over this build when
+# it quits, so it must be closed, and anything it staged goes.
+if (Get-Process herdr-app -ErrorAction SilentlyContinue) {
+    throw "Built. Quit Herdr, then run this again (without -Test) to install it."
+}
 $app = Join-Path $env:LOCALAPPDATA "Programs\herdr-app"
-Remove-Item -LiteralPath "$app.new", "$app.new.json" -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($staged in "$app.new", "$app.new.json") {
+    if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged -Recurse -Force }
+}
 & "$PSScriptRoot\install-windows.ps1"

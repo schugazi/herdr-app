@@ -388,7 +388,8 @@ impl TerminalView {
             loop {
                 cx.background_executor().timer(BLINK).await;
                 let ticking = this.update_in(cx, |this, window, cx| {
-                    let on = this.blinks(window);
+                    // Scrolled off screen, it waits for the scroll's render to start again.
+                    let on = this.blinks(window) && this.grid.borrow().vt.cursor_on_screen();
                     let typed = this.typed_at.get().is_some_and(|t| t.elapsed() < BLINK);
                     let off = on && !typed && !this.blink_off.get();
                     if off != this.blink_off.get() {
@@ -411,10 +412,16 @@ impl TerminalView {
         self.shown_in.set(FRAME.load(Ordering::Relaxed));
     }
 
+    /// Typing shows a blinking cursor at once, echo or not; the clock keeps
+    /// it shown while typing goes on.
+    fn show_cursor(&self, cx: &mut Context<Self>) {
+        if self.blink_off.replace(false) {
+            cx.notify();
+        }
+    }
+
     fn send(&self, bytes: &[u8]) {
         self.typed_at.set(Some(Instant::now()));
-        // The cursor shows while typing; the echo redraws it.
-        self.blink_off.set(false);
         let mut g = self.grid.borrow_mut();
         if let Some(ch) = g.channel
             && !bytes.is_empty()
@@ -522,6 +529,7 @@ impl TerminalView {
         let bytes = key_bytes(&mut self.grid.borrow_mut().vt, ev);
         if let Some(bytes) = bytes {
             self.send(&bytes);
+            self.show_cursor(cx);
             cx.stop_propagation();
         }
     }
@@ -1117,7 +1125,8 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: &Rc<RefCell<Grid>>, focused: bool, b
         let w = cell.width * if wide { 2.0 } else { 1.0 };
         let color = hsla(cur.color);
         let p = at(x, y);
-        let thick = crate::settings::z(crate::settings::get().cursor_thickness);
+        // settings.json's problems are reported, not refused: keep any value drawable.
+        let thick = crate::settings::z(crate::settings::get().cursor_thickness.clamp(1.0, 10.0));
         match (focused, cur.shape) {
             (true, CursorShape::Block) => {
                 window.paint_quad(fill(snap_box(Bounds::new(p, size(w, cell.height))), color));
@@ -1192,6 +1201,7 @@ impl EntityInputHandler for TerminalView {
     fn replace_text_in_range(&mut self, _range: Option<std::ops::Range<usize>>, text: &str, _w: &mut Window, cx: &mut Context<Self>) {
         self.grid.borrow_mut().marked = None;
         self.send(text.as_bytes());
+        self.blink_off.set(false);
         cx.notify();
     }
 
@@ -1229,6 +1239,8 @@ impl Render for TerminalView {
                 g.core.focus(ch, focused);
             }
         }
+        // Before the blink check, so a settings change starts the clock in this render.
+        self.grid.borrow_mut().vt.set_cursor_default(vt::cursor_default());
         self.blink(window, cx);
         // Shown at once when the window or the terminal loses focus.
         let blink_off = self.blink_off.get() && self.blinks(window);
@@ -1333,7 +1345,6 @@ impl Render for TerminalView {
                     move |bounds, _window, _cx| {
                         let mut g = grid.borrow_mut();
                         g.vt.set_theme(vt::theme());
-                        g.vt.set_cursor_default(vt::cursor_default());
                         g.cell = cell;
                         let (px_, py_) = pad();
                         let cols = ((f32::from(bounds.size.width) - 2.0 * px_) / f32::from(cell.width)).floor().max(2.0) as u16;
