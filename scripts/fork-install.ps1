@@ -13,7 +13,7 @@ try {
     if ($LASTEXITCODE) { throw "submodule update failed (exit $LASTEXITCODE)." }
     if ($Test) {
         # Every target but shot_pixels, which opens a real window: an SSH session has no desktop.
-        cargo test --locked --lib --bins --test commands --test notices --test skill
+        cargo test --locked --bins --test commands --test notices --test skill
         if ($LASTEXITCODE) { throw "tests failed (exit $LASTEXITCODE)." }
     }
 } finally {
