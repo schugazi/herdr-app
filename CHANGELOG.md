@@ -1,5 +1,94 @@
 # Herdr changelog
 
+## [0.1.12] - 2026-11-02
+<!-- spotlight macos -->
+
+### New
+- **On macOS, your agents now run fully apart from the app.** Close Herdr, quit it, update it: your agents keep running. Agents already running pick this up the next time they start.
+- On macOS, the system may ask once if **herdr-core** can access a folder like Documents. That's Herdr; click Allow.
+- On macOS, Settings > Keyboard chooses what Option does: Alt, typing characters like á and €, or left or right Option as Alt.
+- A machine that was rebuilt or replaced shows "rebuilt · Connect" in the sidebar: one click connects to the new one.
+- Seen and pinned agents are shared between Herdr windows and the phone app.
+- Mods can take the keyboard, so moving focus can land on them. (#283, thanks @Osc100)
+- PiG agents have their own icon. (#299, thanks @balcsida)
+- Add machine takes a port, like `can@server:2222`.
+
+### Fixed
+- On Linux, color emoji show in color instead of blank (Fedora's emoji font).
+- Emoji like ✍️ and ❤️ take two cells and draw in color. (#287, thanks @occultsound)
+- On macOS, programs in Herdr terminals can ask for the microphone, camera and to control other apps. (#137, thanks @shivanandasai-altir; #252)
+- Agents on another machine find the commands their shell setup puts on PATH. (#262, thanks @tajchert)
+- New spaces open on the machine you're looking at.
+- Horizontal scrolling reaches programs like vim and less.
+- Clicks work in Textual apps.
+- btop's braille graphs draw without gaps.
+- Nerd Font icons use your terminal font.
+- Rounded corners and dashed lines in boxes draw like Ghostty. (#255, thanks @occultsound)
+- Herdr uses less CPU with many busy agents.
+- A big project no longer makes the folder watcher burn a CPU core. (#263, #257)
+- Mod pictures and icons update when their file is saved.
+- Moving focus back into a split returns to the pane you came from. (#304, thanks @sundarshahi)
+- Unnamed tabs show what their agent is doing in the agents list. (#281, thanks @sundarshahi)
+- A new tab with no space open starts a space. (#303, thanks @sundarshahi)
+- Files marks the files inside a new folder, and opens folder symlinks. (#309, thanks @Nagell; #301, thanks @azaeldrm)
+- Lists in mods follow the zoom. (#296, thanks @Calonca)
+- The + menu shows your agents right away. (#251, thanks @shellscape)
+- Grok shows its own icon. (#293, thanks @Zynoo71)
+- A malformed command can't close the tab you're on. (#297, thanks @chanyang721)
+- On Linux, Ctrl+Insert and Shift+Insert copy and paste in new installs; add them to your keys.json to get them on an existing one. (#258, thanks @dr-moreira)
+- In full screen on macOS, the sidebar header lines up. (#261, thanks @runkids)
+- On Windows, file names in Korean, Chinese and other languages show and open in Files. (#236, thanks @loonslo)
+- On Windows, Esc then Ctrl+C reach the program as two keys. (#162, thanks @JJLiebig)
+- In Git Bash on Windows, the installer points to the PowerShell one. (#238, thanks @sundarshahi)
+
+## [0.1.11] - 2026-10-31
+
+### Fixed
+- The window no longer freezes or spikes the CPU for seconds at a time while mods run.
+- Programs get the new colors right away when you change the theme or switch light and dark. (#122, thanks @geoqiao)
+- On macOS, Vietnamese input methods like OpenKey, DauKey and Gõ Nhanh type in terminals. (#230, thanks @emizuki)
+- Links a program breaks across lines open with Cmd+click. (thanks @pdeveltere)
+- Editing the theme you're using repaints the window. (thanks @shawnyeager)
+- Mod tooltips show in embedded windows. (thanks @ruilopesm)
+- Opening the palette or a popup again closes it instead of stacking another. (#151, thanks @ruttybob)
+- The status bar shows your real palette key. (#150, thanks @ruttybob)
+- The Go-to popup keeps the selected row in view. (#152, thanks @ruttybob)
+- No empty strip under the agents list in a wide sidebar. (thanks @kaofelix)
+- A failed update check no longer says "Up to date". (#186, thanks @weichieh0204)
+
+## [0.1.10] - 2026-10-30
+
+### Fixed
+- Images that Claude Code, yazi and other programs draw with kitty placeholders show up instead of rows of boxes. (#110)
+- Images are the right size and sharp on Retina and other HiDPI screens. (#70, thanks @wpdmitry)
+- Hover effects work in Claude Code and other programs that track the mouse.
+- A drag that starts in another pane no longer reaches nvim or tmux, and a drag inside one keeps working when you let go outside it.
+- Dragging a selection past the top or bottom of a terminal scrolls it.
+- Closing a tab or space no longer brings its terminals back as unnamed tabs for a moment. (#108)
+- The + menu starts agents with 1 to 9 while it's open, and shows your own shortcuts. (#102, #133, thanks @notHuman9504)
+- Add a machine lists every host in your SSH config and shows the install prompt on top. (#95)
+- Your own alert sounds play, and sound changes apply without a restart.
+- A layout block that shows the focused agent stays in your layout when that agent ends.
+- The Files panel keeps your open folders and preview when you switch spaces. (#86, thanks @ruilopesm)
+- Dragging a space in the sidebar shows where it will land. (#114, thanks @takahashi-seiryu)
+- Long agent titles cut off before the pin and the time. (#127, thanks @rashim2104)
+- The + above Spaces lines up with the sidebar button. (#121, thanks @weskor)
+- On macOS, a slow mouse wheel scrolls terminals. (#80, thanks @juanibiapina)
+- On macOS, Cmd+V pastes copied files and screenshots into agents. (#105, thanks @WesleyBLDC)
+- On macOS, Cmd+Shift+[ and ] switch tabs, and other Shift+punctuation shortcuts work.
+- On macOS, Option types [ ] { } on ABC-QWERTZ and ABC-AZERTY.
+- On macOS, Vietnamese Telex and other input methods compose. (#93)
+- On macOS, keys typed with Fn held, like Fn+Esc for a backtick, reach terminals.
+- On macOS, agents started from the + menu load your login setup, like Homebrew's PATH.
+- On Windows, Ctrl+V pastes text, like Windows Terminal.
+- On Windows, the Files panel opens folders with spaces or parentheses in their path. (#130)
+- On Windows, the window buttons line up and stay crisp at every display scale.
+- On Linux, Chinese typed through fcitx or ibus on X11 comes out right. (#97)
+- On Linux, accent keys no longer type a stray character first. (#87, thanks @ruilopesm)
+- On Linux, right-clicking a tab no longer opens the window manager's menu too. (#79, thanks @dev-gvs)
+- `terminal.open` with a command starts in the folder you give it.
+- `herdr-app check` no longer crashes on mods with scrolling lists or layout animations.
+
 ## [0.1.9] - 2026-10-30
 
 ### Fixed
