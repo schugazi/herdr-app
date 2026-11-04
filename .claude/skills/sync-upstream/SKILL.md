@@ -1,6 +1,6 @@
 ---
 name: sync-upstream
-description: Merge upstream herdrdev/herdr-app's latest release tag into the fork's master, resolve conflicts, get exactly one astra review, then build, test and install it on multivac, push, and bring every herdr-core along. Use when asked to sync, update Herdr 2, or merge upstream.
+description: Merge upstream herdrdev/herdr-app's latest release tag into the fork's master, resolve conflicts, get exactly one sol review, then build, test and install it on multivac, push, and bring every herdr-core along. Use when asked to sync, update Herdr 2, or merge upstream.
 disable-model-invocation: true
 ---
 
@@ -36,9 +36,9 @@ git submodule update --init --recursive
 
 Resolve every conflict by reading both sides' intent. Keep the fork's cursor settings re-applied on upstream's new code; if upstream now ships its own cursor style, blink or thickness setting, take upstream's and drop the fork's duplicate (then update `CLAUDE.md` and the host README's cursor line). Version files and `CHANGELOG.md`: upstream's. Fork-only files (`CLAUDE.md`, `scripts/fork-install.ps1`, this skill) stay. Check cleanly merged files that touch `src/vt.rs`, `src/terminal.rs` and `src/settings.rs` too. Commit locally (body: what upstream brought, what of the fork was kept or replaced).
 
-## 3. One astra review, exactly once
+## 3. One sol review, exactly once
 
-One Agent call, `subagent_type: "code-reviewer"`, `model: "astra"`: review how merge `<hash>` in /home/schu/herdr-app (upstream tag `<tag>` as `upstream/stable`, local and unpublished) resolved its conflicts, starting from `git show --remerge-diff <hash>`, with `git diff upstream/stable <hash>` as the fork's remaining delta; look for fork behaviour lost or half re-applied, upstream fixes dropped, duplicate implementations and semantic breaks in cleanly merged files; report only. Apply what you agree with, `git commit --amend`, one line per rejected finding in the body. Never call it twice.
+One Agent call, `subagent_type: "code-reviewer"`, `model: "sol"`: review how merge `<hash>` in /home/schu/herdr-app (upstream tag `<tag>` as `upstream/stable`, local and unpublished) resolved its conflicts, starting from `git show --remerge-diff <hash>`, with `git diff upstream/stable <hash>` as the fork's remaining delta; look for fork behaviour lost or half re-applied, upstream fixes dropped, duplicate implementations and semantic breaks in cleanly merged files; report only. Apply what you agree with, `git commit --amend`, one line per rejected finding in the body. Never call it twice.
 
 ## 4. Build, test and install on multivac
 
@@ -61,7 +61,7 @@ The printed hash must be the merge you pushed (`git rev-parse HEAD` here).
 
 Then every core to the matching version (the app no longer updates them): Windows `ssh multivac hc update`; mycroftxxx and WSL as in `~/.local/share/herdr-app/README.md` "Updates". Running terminals keep running. The user reopens Herdr on the new build.
 
-Finish with a short report: the tag merged, conflicts and their resolutions, astra's findings (applied or rejected), test and install results, the core versions (`ssh multivac hc machine ls`).
+Finish with a short report: the tag merged, conflicts and their resolutions, sol's findings (applied or rejected), test and install results, the core versions (`ssh multivac hc machine ls`).
 
 ## Hard stops (report, don't force)
 
