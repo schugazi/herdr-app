@@ -3907,8 +3907,12 @@ impl AppWindow {
             return out;
         }
         if let Some(p) = &self.focused_pane {
-            // Pane selection survives an input, float or dialog taking the keyboard.
-            if self.pane_term(p).is_some_and(|t| !t.view.read(cx).owns_keyboard_focus(window, cx)) {
+            // Pane selection survives an input, float or dialog taking the keyboard. A frameless
+            // popup holding it (a key catcher, like a prefix mod) keeps the ring: keys still act
+            // on this pane, and nothing else on screen shows where they go.
+            if self.pane_term(p).is_some_and(|t| !t.view.read(cx).owns_keyboard_focus(window, cx))
+                && !self.overlays.iter().any(|o| o.bare && o.kind == OverlayKind::Popup && o.focus.contains_focused(window, cx))
+            {
                 return out;
             }
             if let Some(c) = self.model.active_tab()
