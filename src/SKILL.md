@@ -9,7 +9,7 @@ Your terminal address is `$HC_TERMINAL_ID`; it is not a pane ID.
 ## Inspect before acting
 
 ```sh
-herdr-app ls          # spaces > tabs > terminals, including pane IDs
+herdr-app ls          # spaces > tabs (each with zoomed) > terminals, including pane IDs
 herdr-app status      # current layout, focus, overlays, zoom and file/mod errors
 herdr-app commands    # available commands, arguments and descriptions
 ```
@@ -64,6 +64,11 @@ Use `commands` to confirm the command's exact shape:
 ```sh
 herdr-app do pane.split '{"direction":"right","pane":"p12"}'
 ```
+
+`pane.zoom --pane p12 --on true` shows only that pane, in place of any other
+zoom in its tab; `--on false` shows all again only if p12 is the zoomed one.
+Without `--on` it toggles. With `--on`, a one-pane tab fails with `nothing to
+zoom`. `ls` gives each tab's `zoomed`.
 
 `terminal.search` opens a find bar in the focused terminal. It searches that
 terminal's screen and scrollback; Enter and Shift-Enter move between matches,

@@ -56,7 +56,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("tab.unsettle", &[opt("id")], "Bring a settled tab back to the lists."),
     cmd("tab.next", &[], "Show the next tab."),
     cmd("tab.prev", &[], "Show the previous tab."),
-    cmd("pane.zoom", &[opt("pane")], "Show only this pane of its tab, or all again."),
+    cmd("pane.zoom", &[opt("pane"), opt("on")], "Show only this pane of its tab, or all again. Without on it toggles; on true zooms this pane (in place of another), on false shows all again if this pane is the zoomed one; any other on (null too) is an error. With on, a tab of one pane is an error: nothing to zoom."),
     cmd("pane.focus", &[opt("pane"), opt("terminal")], "Focus a pane (or the pane showing a terminal)."),
     cmd("pane.go", &[req("direction")], "Focus the pane or focusable mod to the \"left\", \"right\", \"up\" or \"down\"."),
     cmd("pane.swap", &[req("direction")], "Swap the focused pane with its neighbor in a direction."),

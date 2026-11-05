@@ -552,7 +552,10 @@ The main ones:
   skip settled tabs).
 - Panes: `pane.split {direction: "right" | "down", pane?, argv? | mod?, props?}` (a new
   terminal, or a mod pane), `pane.close {pane?}`,
-  `pane.zoom {pane?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom {pane?, on?}`, `pane.focus {pane | terminal}`, `pane.go {direction}`, `pane.swap {direction}`.
+  `pane.zoom` without `on` toggles; `on: true` zooms this pane in place of any
+  other, `on: false` shows all again only if this pane is the zoomed one; with
+  `on`, a tab of one pane is `nothing to zoom`. `ls` gives each tab's `zoomed`.
   `pane.go` prefers the most recently focused pane along the nearest edge in that
   direction; unvisited panes fall back to overlap, then top/left layout order.
   `pane.go` also reaches visible mods whose `mod.json` says `"focusable": true`, and

@@ -2966,13 +2966,15 @@ impl AppWindow {
                 self.kill(&addr.into_iter().collect::<Vec<_>>(), cx);
             }
             "pane.zoom" => {
+                // Only an absent `on` toggles: null is not a state.
+                let on = match a.get("on") {
+                    None => None,
+                    Some(Value::Bool(on)) => Some(*on),
+                    Some(_) => return self.fail("pane.zoom: on must be true or false"),
+                };
                 let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
-                if let Some(pane) = pane
-                    && let Some(ctx) = self.model.tab_of(&pane).map(|c| c.id.clone())
-                    && let Some(c) = self.model.tab_mut(&ctx)
-                    && c.root.panes().len() > 1
-                {
-                    c.zoomed = if c.zoomed.as_deref() == Some(pane.as_str()) { None } else { Some(pane) };
+                if let Err(error) = zoom_pane(&mut self.model, pane, on) {
+                    return self.fail(error);
                 }
             }
             "pane.focus" => {
@@ -3759,7 +3761,7 @@ impl AppWindow {
                     .iter()
                     .map(|c| {
                         let terms: Vec<Value> = c.root.terminals().iter().filter_map(|n| Some(terminal(&n.id, n.terminal()?))).collect();
-                        json!({ "id": c.id, "name": Model::tab_name(p, c), "active": Some(&c.id) == active.as_ref(), "settled": c.settled.is_some(), "terminals": terms })
+                        json!({ "id": c.id, "name": Model::tab_name(p, c), "active": Some(&c.id) == active.as_ref(), "settled": c.settled.is_some(), "zoomed": c.zoomed.is_some(), "terminals": terms })
                     })
                     .collect();
                 json!({ "id": p.id, "name": m.space_name(p, &home()), "folder": p.folder, "machine": p.machine, "active": m.active.as_deref() == Some(&p.id), "tabs": tabs })
@@ -4564,6 +4566,32 @@ fn needs_model_pane(name: &str, args: &Value) -> bool {
         "terminal.open" | "terminal.keep" => matches!(AppWindow::arg(args, "place"), Some("right" | "down")),
         _ => false,
     }
+}
+
+/// `pane.zoom`, a private view (never in the layout document). With `on` the
+/// tab ends as asked: true zooms this pane in place of any other, false shows
+/// all again only if this pane was the zoomed one. Without it, a toggle that
+/// passes over a lone or unknown pane quietly, as keys and mods expect.
+fn zoom_pane(model: &mut Model, pane: Option<String>, on: Option<bool>) -> Result<(), String> {
+    let quiet = |error: String| if on.is_some() { Err(error) } else { Ok(()) };
+    let Some(pane) = pane else { return quiet("no pane to zoom".into()) };
+    let Some(c) = model.tab_of(&pane).map(|c| c.id.clone()) else { return quiet(format!("no pane {pane:?}")) };
+    let c = model.tab_mut(&c).expect("tab_of found it");
+    let panes = c.root.panes();
+    if on.is_some() && !panes.iter().any(|n| n.id == pane) {
+        return Err(format!("no pane {pane:?}"));
+    }
+    if panes.len() < 2 {
+        return quiet("nothing to zoom".into());
+    }
+    let zoomed = c.zoomed.as_deref() == Some(pane.as_str());
+    match on {
+        Some(true) => c.zoomed = Some(pane),
+        Some(false) | None if zoomed => c.zoomed = None,
+        Some(false) => {}
+        None => c.zoomed = Some(pane),
+    }
+    Ok(())
 }
 
 fn new_space_machine(args: &Value, person: bool, model: &Model) -> Option<String> {
@@ -5392,6 +5420,115 @@ export default class Probe extends View {
             cx.deactivate_window();
             assert_eq!(seen(cx), Some(json!(false)), "blurred: {:?}", crate::mods::shared("probe.seen"));
         }
+    }
+
+    #[test]
+    fn pane_zoom_sets_the_asked_state_and_toggles_without_it() {
+        use crate::mirror::Document;
+        use crate::model::{Model, Tab};
+        let mut m = Model::default();
+        m.add_space("s", "", "", Tab::new("t", "", "p1", "t1"));
+        assert!(m.split("p1", super::Axis::Row, "p2", "t2"));
+        m.add_space("lone", "", "", Tab::new("l", "", "q", "t3"));
+        let doc = Document::capture(&m, None);
+        let zoom = |m: &mut Model, pane: &str, on: Option<bool>| super::zoom_pane(m, Some(pane.into()), on);
+        let zoomed = |m: &Model| m.tab("t").unwrap().zoomed.clone();
+        // Two panes, each asked twice in a row: the same state, no error.
+        for _ in 0..2 {
+            assert_eq!(zoom(&mut m, "p1", Some(true)), Ok(()));
+            assert_eq!(zoomed(&m).as_deref(), Some("p1"));
+        }
+        assert_eq!(Document::capture(&m, None), doc, "zoom stays out of the layout document");
+        for _ in 0..2 {
+            assert_eq!(zoom(&mut m, "p1", Some(false)), Ok(()));
+            assert_eq!(zoomed(&m), None);
+        }
+        // Another pane zoomed: on takes the zoom over; off on a pane not zoomed leaves it.
+        zoom(&mut m, "p2", Some(true)).unwrap();
+        zoom(&mut m, "p1", Some(true)).unwrap();
+        assert_eq!(zoomed(&m).as_deref(), Some("p1"));
+        assert_eq!(zoom(&mut m, "p2", Some(false)), Ok(()));
+        assert_eq!(zoomed(&m).as_deref(), Some("p1"));
+        // Without on it toggles as keys do: over to another pane, then off.
+        zoom(&mut m, "p2", None).unwrap();
+        assert_eq!(zoomed(&m).as_deref(), Some("p2"));
+        zoom(&mut m, "p2", None).unwrap();
+        assert_eq!(zoomed(&m), None);
+        // A lone pane: nothing to zoom when asked for a state; the toggle passes quietly.
+        for on in [Some(true), Some(false)] {
+            assert_eq!(zoom(&mut m, "q", on), Err("nothing to zoom".into()));
+        }
+        assert_eq!(zoom(&mut m, "q", None), Ok(()));
+        assert_eq!(m.tab("l").unwrap().zoomed, None);
+        // Not a pane: an error with on, quiet without, as before.
+        for id in ["nope", "t"] {
+            assert_eq!(zoom(&mut m, id, Some(true)), Err(format!("no pane {id:?}")));
+        }
+        assert_eq!(zoom(&mut m, "nope", None), Ok(()));
+        assert_eq!(super::zoom_pane(&mut m, None, Some(true)), Err("no pane to zoom".into()));
+        assert_eq!(Document::capture(&m, None), doc);
+    }
+
+    #[test]
+    fn scripts_zoom_by_desired_state_and_ls_shows_it() {
+        in_own_process("zoom_from_a_script");
+    }
+
+    /// `pane.zoom {pane, on}` as a script sends it (run_as, person: false):
+    /// its answers, `zoomed` in `ls`, and the layout document untouched.
+    #[gpui::test]
+    fn zoom_from_a_script(cx: &mut gpui::TestAppContext) {
+        use serde_json::{Value, json};
+        if !running_alone("zoom_from_a_script") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "main", "type": "block", "content": { "tab": "active" }
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("s1", "", "", crate::model::Tab::new("a", "", "p1", "t1"));
+            assert!(this.model.split("p1", super::Axis::Row, "p2", "t2"));
+            this.model.add_space("s2", "", "", crate::model::Tab::new("b", "", "q", "t3"));
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        let doc = |cx: &mut gpui::VisualTestContext| cx.update(|_, cx| crate::mirror::Document::capture(&view.read(cx).model, None));
+        let before = doc(cx);
+        let zoom = |args: Value, cx: &mut gpui::VisualTestContext| {
+            let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("pane.zoom", args, false, window, cx)));
+            cx.run_until_parked();
+            reply
+        };
+        // `ls`'s zoomed for a tab, and the model's zoomed pane behind it.
+        let ls = |tab: &str, cx: &mut gpui::VisualTestContext| cx.update(|_, cx| {
+            let world = view.read(cx).world();
+            let mut tabs = world["spaces"].as_array().unwrap().iter().flat_map(|s| s["tabs"].as_array().unwrap());
+            tabs.find(|t| t["id"] == tab).unwrap()["zoomed"].clone()
+        });
+        let state = |cx: &mut gpui::VisualTestContext| (ls("a", cx), cx.update(|_, cx| view.read(cx).model.tab("a").unwrap().zoomed.clone()));
+        let ok = json!({ "ok": true });
+        for _ in 0..2 {
+            assert_eq!(zoom(json!({ "pane": "p1", "on": true }), cx), ok);
+            assert_eq!(state(cx), (json!(true), Some("p1".into())));
+        }
+        assert_eq!(zoom(json!({ "pane": "p2", "on": true }), cx), ok);
+        assert_eq!(state(cx), (json!(true), Some("p2".into())));
+        assert_eq!(zoom(json!({ "pane": "p1", "on": false }), cx), ok);
+        assert_eq!(state(cx), (json!(true), Some("p2".into())));
+        assert_eq!(zoom(json!({ "pane": "p2", "on": false }), cx), ok);
+        assert_eq!(state(cx), (json!(false), None));
+        assert_eq!(zoom(json!({ "pane": "q", "on": true }), cx), json!({ "error": "nothing to zoom" }));
+        assert_eq!(zoom(json!({ "pane": "q" }), cx), ok);
+        assert_eq!(zoom(json!({ "pane": "p1" }), cx), ok, "an absent on is the toggle");
+        assert_eq!(state(cx), (json!(true), Some("p1".into())));
+        // Any other on, null included, fails and leaves the zoom as it was.
+        assert_eq!(zoom(json!({ "pane": "p1", "on": null }), cx), json!({ "error": "pane.zoom: on must be true or false" }));
+        for bad in [json!({ "pane": "p1", "on": null }), json!({ "pane": "p1", "on": "off" }), json!({ "pane": "p1", "on": 0 }), json!({ "pane": "p1", "zoom": true })] {
+            assert!(zoom(bad.clone(), cx)["error"].is_string(), "{bad}");
+            assert_eq!(state(cx), (json!(true), Some("p1".into())), "{bad}");
+        }
+        assert_eq!(ls("b", cx), json!(false));
+        assert_eq!(doc(cx), before, "zoom never reaches the layout document run_as flushes");
     }
 
     include!("window/pane_size_tests.rs");
