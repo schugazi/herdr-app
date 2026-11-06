@@ -3165,7 +3165,9 @@ const BASE: &str = r#"  /** A row. */
       /** Defaults to false. */
       soft_wrap?: boolean;
       /** Semantic colors: keyword, string, comment, function, type, number,
-       * constant, variable, operator, punctuation, boolean, string.escape.
+       * constant, variable, operator, punctuation, boolean, string.escape,
+       * property (keys, members), tag, attribute, heading, bold, italic, code,
+       * link, inserted, deleted. bold and italic also set weight and slant.
        * Values are concrete hex colors; unspecified UI colors follow the theme. */
       syntax?: Record<string, string>;
     }) => EditorState;

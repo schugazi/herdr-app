@@ -44,16 +44,37 @@ impl SyntectHighlighter {
             return;
         }
 
-        let name = scopes.scopes.iter().rev().find_map(|scope| {
-            *self
-                .semantic_names
-                .entry(*scope)
-                .or_insert_with(|| semantic_name(*scope))
-        });
-        if let Some(name) = name {
+        if let Some(name) = stack_name(&mut self.semantic_names, &scopes.scopes) {
             self.highlights.push((range, name));
         }
     }
+}
+
+/// The innermost scope with a semantic name names the range, except that a
+/// string inside a mapping key (JSON's and JS's quoted keys) is a property, as
+/// YAML's plain keys are.
+fn stack_name(
+    names: &mut HashMap<Scope, Option<&'static str>>,
+    scopes: &[Scope],
+) -> Option<&'static str> {
+    let mut named = scopes
+        .iter()
+        .rev()
+        .filter_map(|scope| *names.entry(*scope).or_insert_with(|| semantic_name(*scope)));
+    match named.next()? {
+        "string" if named.any(|outer| outer == "property") => Some("property"),
+        // Markdown's ***both*** nests one emphasis in the other; keep both.
+        "bold" if named.any(|outer| outer == "italic") => Some("bold.italic"),
+        "italic" if named.any(|outer| outer == "bold") => Some("bold.italic"),
+        name => Some(name),
+    }
+}
+
+/// Whether `scope` is `prefix` or one of its dotted children.
+fn is(scope: &str, prefix: &str) -> bool {
+    scope
+        .strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
 }
 
 fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
@@ -164,6 +185,32 @@ fn semantic_name(scope: Scope) -> Option<&'static str> {
         "comment"
     } else if scope.starts_with("constant.character.escape") {
         "string.escape"
+    } else if is(&scope, "markup.inserted") {
+        "inserted"
+    } else if is(&scope, "markup.deleted") {
+        "deleted"
+    } else if is(&scope, "markup.underline.link") || is(&scope, "string.other.link") {
+        "link"
+    } else if is(&scope, "entity.name.tag") && scope.ends_with(".yaml") {
+        "property"
+    } else if is(&scope, "entity.name.tag") {
+        "tag"
+    } else if is(&scope, "entity.other.attribute-name") {
+        "attribute"
+    } else if is(&scope, "support.type.property-name")
+        || is(&scope, "meta.structure.dictionary.key")
+        || is(&scope, "meta.object-literal.key")
+        || is(&scope, "meta.property.object")
+    {
+        "property"
+    } else if is(&scope, "markup.heading") || is(&scope, "entity.name.section") {
+        "heading"
+    } else if is(&scope, "markup.bold") {
+        "bold"
+    } else if is(&scope, "markup.italic") {
+        "italic"
+    } else if is(&scope, "markup.raw") {
+        "code"
     } else if scope.starts_with("string") {
         "string"
     } else if scope.starts_with("constant.numeric") {
@@ -247,13 +294,22 @@ impl HighlightStyleResolver for SyntaxStyles {
                     "function" => 0x61afef,
                     "type" => 0xe5c07b,
                     "operator" => 0x56b6c2,
+                    "property" | "tag" | "heading" | "deleted" => 0xe06c75,
+                    "attribute" => 0xd19a66,
+                    "code" | "inserted" => 0x98c379,
+                    "link" => 0x61afef,
                     // Unclassified identifiers and punctuation follow the theme foreground.
                     _ => return None,
                 };
                 Some(gpui::rgb(rgb).into())
             });
-        color.map(|color| HighlightStyle {
-            color: Some(color),
+        // Markdown's emphasis keeps the text color unless one is given, but shows its weight or slant.
+        let font_weight = (root == "bold").then_some(gpui::FontWeight::BOLD);
+        let font_style = (root == "italic" || name == "bold.italic").then_some(gpui::FontStyle::Italic);
+        (color.is_some() || font_weight.is_some() || font_style.is_some()).then(|| HighlightStyle {
+            color,
+            font_weight,
+            font_style,
             ..Default::default()
         })
     }
@@ -283,5 +339,39 @@ mod tests {
         assert!(find_syntax("rust").is_some());
         assert!(find_syntax("rs").is_some());
         assert!(find_syntax("unknown-language").is_none());
+    }
+
+    /// Each token of one line with its semantic name.
+    fn names(language: &str, line: &'static str) -> Vec<(&'static str, Option<&'static str>)> {
+        let mut parser = ParseState::new(find_syntax(language).unwrap());
+        let mut scopes = ScopeStack::new();
+        let mut cache = HashMap::new();
+        let mut out = Vec::new();
+        let mut cursor = 0;
+        for (index, operation) in parser.parse_line(line, &SYNTAX_SET).unwrap() {
+            if index > cursor {
+                out.push((&line[cursor..index], stack_name(&mut cache, &scopes.scopes)));
+            }
+            scopes.apply(&operation).unwrap();
+            cursor = index;
+        }
+        out
+    }
+
+    #[test]
+    fn finer_names_resolve() {
+        let md = names("md", "***both***\n");
+        assert!(md.contains(&("both", Some("bold.italic"))));
+        let style = SyntaxStyles::default().style("bold.italic").unwrap();
+        assert_eq!(style.font_weight, Some(gpui::FontWeight::BOLD));
+        assert_eq!(style.font_style, Some(gpui::FontStyle::Italic));
+        let json = names("json", "{\"id\": \"root\"}\n");
+        assert!(json.contains(&("id", Some("property"))));
+        assert!(json.contains(&("root", Some("string"))));
+        let yaml = names("yaml", "name: x\n");
+        assert!(yaml.contains(&("name", Some("property"))));
+        let html = names("html", "<a href=\"x\">\n");
+        assert!(html.contains(&("a", Some("tag"))));
+        assert!(html.contains(&("href", Some("attribute"))));
     }
 }
