@@ -39,17 +39,6 @@ struct Resize {
     view_width: Pixels,
 }
 
-/// A window's outer bounds from its measured ones: the measuring canvas sits
-/// inside the body's 1 px border, which a framed (not bare) window has. The
-/// spot (`place`) and the size it is drawn at are the outer ones.
-fn outer(o: &Overlay, b: Bounds<Pixels>) -> Bounds<Pixels> {
-    if o.bare {
-        return b;
-    }
-    let edge = px(1.0);
-    Bounds { origin: b.origin - point(edge, edge), size: size(b.size.width + edge * 2., b.size.height + edge * 2.) }
-}
-
 pub struct WinDrag {
     pub id: String,
     /// The pointer's offset from the window's top left.
@@ -169,7 +158,7 @@ impl AppWindow {
     /// A window at its spot: where it was dropped, else centered once its size
     /// is known (it stays invisible until then), always partly on screen.
     pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, viewport: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
-        let measured = self.bounds.borrow().get(&o.slot).map(|b| outer(o, *b).size);
+        let measured = self.bounds.borrow().get(&o.slot).map(|b| b.size);
         let live = self.resizing(&o.id);
         // Mid-resize the live size, not last frame's, so the clamp below agrees with `frame()`.
         let size = live.map(|(_, s)| s).or(measured).unwrap_or_default();
@@ -227,7 +216,6 @@ impl AppWindow {
         };
         let body = body
             .relative()
-            .child(measure)
             .children(grips)
             // Pressed anywhere, even on the mod's own controls: to the front.
             .capture_any_mouse_down(cx.listener(move |this, _, _, cx| this.raise_window(&raise, cx)))
@@ -238,7 +226,9 @@ impl AppWindow {
                     this.window_press(&press, ev.position, cx);
                 }),
             );
-        div().absolute().left(x).top(y).when(measured.is_none(), |d| d.opacity(0.0)).child(body).into_any_element()
+        // Measured on this borderless wrapper, not inside the body's border (which
+        // GPUI snaps to device pixels): the spot and size are the outer ones.
+        div().absolute().left(x).top(y).when(measured.is_none(), |d| d.opacity(0.0)).child(body).child(measure).into_any_element()
     }
 
     fn raise_window(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -267,8 +257,7 @@ impl AppWindow {
     /// Where a window is drawn now, border included.
     fn outer_bounds(&self, id: &str) -> Option<Bounds<Pixels>> {
         let o = self.overlays.iter().find(|o| o.id == id)?;
-        let b = self.bounds.borrow().get(&o.slot).copied()?;
-        Some(outer(o, b))
+        self.bounds.borrow().get(&o.slot).copied()
     }
 
     /// A press on a resizable window's edge: the window is pinned where it is
