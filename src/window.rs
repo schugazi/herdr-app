@@ -329,6 +329,8 @@ struct Overlay {
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
+    /// A window `resizable: true` (fork): its right and bottom edges resize it.
+    resizable: bool,
 }
 
 struct Drag {
@@ -3511,10 +3513,13 @@ impl AppWindow {
         }
         props["overlay"] = json!(id);
         let num = |k: &str, d: f32| spec.get(k).and_then(Value::as_f64).map_or(d, |v| v as f32);
+        let resizable = kind == OverlayKind::Window && spec.get("resizable").and_then(Value::as_bool) == Some(true);
+        // A resizable window keeps the size it was last resized to, by its key.
+        let resized = key.as_deref().filter(|_| resizable).and_then(movable::size_of);
         let size = match kind {
             OverlayKind::Toast => size(340.0, num("height", 72.0)),
             // No size: as big as its content (0 = unset).
-            OverlayKind::Window => size(num("width", 0.0), num("height", 0.0)),
+            OverlayKind::Window => resized.unwrap_or_else(|| size(num("width", 0.0), num("height", 0.0))),
             // No height: as tall as the content, up to most of the window.
             _ => size(num("width", 420.0), num("height", 0.85)),
         };
@@ -3523,7 +3528,7 @@ impl AppWindow {
             _ => self.pointer,
         };
         let top = (spec.get("at").and_then(Value::as_str) == Some("top")).then(|| num("offset", 0.0));
-        let fit = layout.is_none() && (kind == OverlayKind::Popup || (matches!(kind, OverlayKind::Dialog | OverlayKind::Window) && spec.get("height").is_none()));
+        let fit = layout.is_none() && resized.is_none() && (kind == OverlayKind::Popup || (matches!(kind, OverlayKind::Dialog | OverlayKind::Window) && spec.get("height").is_none()));
         if kind == OverlayKind::Window && place.is_none() && spec.get("at").is_some_and(|v| v.get("x").is_some()) {
             place = Some(at);
         }
@@ -3565,6 +3570,7 @@ impl AppWindow {
             place,
             key: key.clone(),
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
+            resizable,
         });
         if let Some(k) = &key {
             if spec.get("keep").and_then(Value::as_bool) == Some(true) {
@@ -4267,8 +4273,9 @@ impl AppWindow {
             let id = o.id.clone();
             // Up to 1: a share of the window (terminals in overlays want room, not px).
             let span = |v: f32, full: Pixels| if v <= 1.0 { full * v } else { settings::z(v) };
-            let (w, h) = (span(o.size.width, viewport.width), span(o.size.height, viewport.height));
-            let sized = |v: f32| v > 0.0 || o.kind != OverlayKind::Window;
+            let resizing = self.resizing(&o.id);
+            let (w, h) = resizing.map_or_else(|| (span(o.size.width, viewport.width), span(o.size.height, viewport.height)), |s| (s.width, s.height));
+            let sized = |v: f32| v > 0.0 || o.kind != OverlayKind::Window || resizing.is_some();
             let content = match &o.layout {
                 Some(l) => self.render_node(l, &HashSet::new(), None, cx),
                 None => self.render_slot(&o.slot, cx),
@@ -4279,7 +4286,7 @@ impl AppWindow {
                 // Esc stays with terminals (agents use it to interrupt) and windows.
                 .when(o.layout.is_none() && o.kind.modal_keys(), |d| d.key_context("Overlay"))
                 .when(sized(o.size.width), |d| d.w(w))
-                .when(sized(o.size.height), |d| if o.fit { d.max_h(h) } else { d.h(h) })
+                .when(sized(o.size.height), |d| if o.fit && resizing.is_none() { d.max_h(h) } else { d.h(h) })
                 .when(!o.bare, |d| d.bg(c("popover")).border_1().border_color(c("border")).rounded(settings::z(8.0)).shadow_lg())
                 .overflow_hidden()
                 .flex()
