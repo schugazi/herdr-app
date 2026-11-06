@@ -28,14 +28,26 @@ pub(super) enum Side {
     Neither,
 }
 
-/// A resize: which edges follow the pointer, and the window's top left and
-/// size when pressed.
+/// A resize: which edges follow the pointer, the window's outer top left and
+/// size when pressed, and the app's width then (for KEEP_SHOWN).
 #[derive(Clone, Copy)]
 struct Resize {
     side: Side,
     bottom: bool,
     origin: Point<Pixels>,
     start: Size<Pixels>,
+    view_width: Pixels,
+}
+
+/// A window's outer bounds from its measured ones: the measuring canvas sits
+/// inside the body's 1 px border, which a framed (not bare) window has. The
+/// spot (`place`) and the size it is drawn at are the outer ones.
+fn outer(o: &Overlay, b: Bounds<Pixels>) -> Bounds<Pixels> {
+    if o.bare {
+        return b;
+    }
+    let edge = px(1.0);
+    Bounds { origin: b.origin - point(edge, edge), size: size(b.size.width + edge * 2., b.size.height + edge * 2.) }
 }
 
 pub struct WinDrag {
@@ -52,18 +64,24 @@ pub struct WinDrag {
 impl WinDrag {
     /// Where a resize puts the window now (top left, size), neither side below
     /// MIN_SIZE (also the one not dragged, so a saved size always passes
-    /// `size_of`); from the left, the right side stays where it was.
+    /// `size_of`). From the left the right side stays where it was, and the
+    /// left side stops KEEP_SHOWN short of the app's right edge; from the
+    /// right, the right side stops KEEP_SHOWN past the app's left edge. So the
+    /// keep-on-screen clamp in render_window never moves a window mid-resize.
     fn frame(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
         let r = self.resize?;
         let grow = self.pointer - self.down;
-        let w = match r.side {
-            Side::Right => r.start.width + grow.x,
-            Side::Left => r.start.width - grow.x,
-            Side::Neither => r.start.width,
-        }
-        .max(settings::z(MIN_SIZE.0));
+        let (min_w, keep) = (settings::z(MIN_SIZE.0), px(KEEP_SHOWN));
+        let right = r.origin.x + r.start.width;
+        let (x, w) = match r.side {
+            Side::Left => {
+                let x = (r.origin.x + grow.x).min(right - min_w).min(r.view_width - keep);
+                (x, right - x)
+            }
+            Side::Right => (r.origin.x, (r.start.width + grow.x).max(min_w).max(keep - r.origin.x)),
+            Side::Neither => (r.origin.x, r.start.width.max(min_w)),
+        };
         let h = if r.bottom { r.start.height + grow.y } else { r.start.height }.max(settings::z(MIN_SIZE.1));
-        let x = if r.side == Side::Left { r.origin.x + r.start.width - w } else { r.origin.x };
         Some((point(x, r.origin.y), size(w, h)))
     }
 }
@@ -151,9 +169,11 @@ impl AppWindow {
     /// A window at its spot: where it was dropped, else centered once its size
     /// is known (it stays invisible until then), always partly on screen.
     pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, viewport: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
-        let measured = self.bounds.borrow().get(&o.slot).map(|b| b.size);
-        let size = measured.unwrap_or_default();
-        let at = match (&self.win_drag, o.place, self.resizing(&o.id)) {
+        let measured = self.bounds.borrow().get(&o.slot).map(|b| outer(o, *b).size);
+        let live = self.resizing(&o.id);
+        // Mid-resize the live size, not last frame's, so the clamp below agrees with `frame()`.
+        let size = live.map(|(_, s)| s).or(measured).unwrap_or_default();
+        let at = match (&self.win_drag, o.place, live) {
             (_, _, Some((p, _))) => p,
             (Some(d), _, _) if d.id == o.id && d.moving && d.resize.is_none() => d.pointer - d.grab,
             (_, Some(p), _) => p,
@@ -187,9 +207,9 @@ impl AppWindow {
                 .cursor(cursor)
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
-                        this.resize_press(&id, ev.position, side, bottom, cx);
+                        this.resize_press(&id, ev.position, side, bottom, window.viewport_size().width, cx);
                     }),
                 )
         };
@@ -239,21 +259,28 @@ impl AppWindow {
         if on_terminal {
             return;
         }
-        let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
+        let Some(b) = self.outer_bounds(id) else { return };
         self.win_drag = Some(WinDrag { id: id.to_owned(), grab: at - b.origin, down: at, pointer: at, moving: false, resize: None });
         cx.notify();
     }
 
+    /// Where a window is drawn now, border included.
+    fn outer_bounds(&self, id: &str) -> Option<Bounds<Pixels>> {
+        let o = self.overlays.iter().find(|o| o.id == id)?;
+        let b = self.bounds.borrow().get(&o.slot).copied()?;
+        Some(outer(o, b))
+    }
+
     /// A press on a resizable window's edge: the window is pinned where it is
     /// drawn now (a centered one too), and the pressed edges follow the pointer.
-    fn resize_press(&mut self, id: &str, at: Point<Pixels>, side: Side, bottom: bool, cx: &mut Context<Self>) {
+    fn resize_press(&mut self, id: &str, at: Point<Pixels>, side: Side, bottom: bool, view_width: Pixels, cx: &mut Context<Self>) {
         // The grip occludes the body, whose capture handler raises a pressed window.
         self.raise_window(id, cx);
-        let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
+        let Some(b) = self.outer_bounds(id) else { return };
         if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
             o.place = Some(b.origin);
         }
-        let resize = Resize { side, bottom, origin: b.origin, start: b.size };
+        let resize = Resize { side, bottom, origin: b.origin, start: b.size, view_width };
         self.win_drag = Some(WinDrag { id: id.to_owned(), grab: at - b.origin, down: at, pointer: at, moving: false, resize: Some(resize) });
         cx.notify();
     }
