@@ -41,6 +41,12 @@ export function pickFolder(options?: { prompt?: string }): Promise<string | null
  *  file (absolute, or relative to ~/.config/herdr-app). */
 export function playSound(sound: string): null;
 
+/** image() keeps every picture it has loaded, so a file rewritten in place keeps showing its old
+ *  content. This forgets the one at `path` (as given to image(), inside the app's folder), so its
+ *  next draw reads the file again; until that read finishes it draws nothing, so keep the previous
+ *  picture under it. */
+export function reloadImage(path: string): null;
+
 /**
  * Runs a command, the same ones keys.json binds (`herdr-app commands` lists them all with their
  * arguments). Structural commands fail while their machine's layout is unavailable.

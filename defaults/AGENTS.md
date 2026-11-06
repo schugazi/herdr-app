@@ -812,6 +812,8 @@ has 120 programs (agents, editors, runtimes, tools, databases, infra);
   `image("mods/<name>/logo.svg")` (full color), `svg("mods/<name>/icon.svg")`
   (tinted with the text color). Saving an asset under `mods/` updates every
   mod showing it, including images that were missing or invalid on first load.
+  Anywhere else (`data/`), a picture stays as first loaded: after rewriting
+  the file, `reloadImage(path)` makes its next draw read it again (fork).
 - The defaults are mods too, read them as examples: `spaces`, `agents`,
   `tabs` (the tab bar), `menu`, `prompt`, `confirm`, `help`, `toast`,
   Terminals' `picker`, `peek`, and `pane` (an

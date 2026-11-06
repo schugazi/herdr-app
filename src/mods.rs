@@ -391,6 +391,8 @@ pub enum Request {
     OpenOverlay { id: String, spec: Value },
     CloseOverlay { id: String },
     Refresh,
+    /// FORK: `reloadImage(path)`: forget a picture image() loaded, so it reads the file again.
+    ReloadImage { path: String },
     /// From `herdr-app do` / `herdr-app status` (control.rs); answer on `reply`.
     Control { cmd: Value, reply: std::sync::mpsc::Sender<Value> },
 }
@@ -531,6 +533,12 @@ fn shared_writer(path: PathBuf) -> (std::sync::mpsc::Sender<String>, std::thread
 
 pub fn request_sender() -> Option<async_channel::Sender<Request>> {
     REQUESTS.get().cloned()
+}
+
+/// FORK: a path image() reads: relative to the app's folder, never above it.
+fn reloadable_image_path(path: &str) -> bool {
+    let p = Path::new(path);
+    !path.is_empty() && !p.is_absolute() && p.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
 }
 
 pub fn request(r: Request) {
@@ -992,6 +1000,15 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             crate::sound::play(a.string(0)?);
             Ok(HostValue::Null)
         })
+        // FORK: image() keeps every picture it loaded; this drops one so its next draw reads the file again.
+        .function("reloadImage", |a| {
+            let path = a.string(0)?.to_owned();
+            if !reloadable_image_path(&path) {
+                return Err(HostError::new("reloadImage takes a path inside the app's folder, as image() does"));
+            }
+            request(Request::ReloadImage { path });
+            Ok(HostValue::Null)
+        })
         .function("run", |a| {
             let name = a.string(0)?.to_owned();
             let args = a.get(1).map(from_host).unwrap_or(Value::Null);
@@ -1172,6 +1189,17 @@ pub fn prepare_load(inst: &Instance) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_image_takes_only_paths_inside_the_app_folder() {
+        assert!(reloadable_image_path("data/schu-browser/f0.jpg"));
+        assert!(reloadable_image_path("./mods/x/logo.svg"));
+        for bad in ["", "../x.png", "data/../../x.png", "/etc/x.png"] {
+            assert!(!reloadable_image_path(bad), "{bad}");
+        }
+        #[cfg(windows)]
+        assert!(!reloadable_image_path(r"C:\x.png"));
+    }
 
     #[test]
     fn live_reads_ignore_unread_inputs_and_keep_pending_changes() {
