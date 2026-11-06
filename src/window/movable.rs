@@ -4,8 +4,9 @@
 //! window remembers its spot, and opening that key again replaces it; with
 //! `keep` it also reopens on the next start, in the layout that opened it.
 //! A layout switch closes them (they belong to their layout, like its mods).
-//! Fork: one opened with `resizable: true` resizes from its right and bottom
-//! edges and their corner, and with a `key` remembers its size too.
+//! Fork: one opened with `resizable: true` resizes from its left, right and
+//! bottom edges and its two bottom corners (the top is its title bar's, for
+//! moving), and with a `key` remembers its size too.
 
 use super::*;
 
@@ -13,10 +14,29 @@ use super::*;
 const DRAG_START: f32 = 4.0;
 /// How much of a window stays on screen however far it's dragged, px.
 const KEEP_SHOWN: f32 = 48.0;
-/// A resizable window's grab band along its right and bottom edges, px.
+/// A resizable window's grab band along its left, right and bottom edges, px.
 const GRIP: f32 = 6.0;
 /// The smallest a window resizes to, px as designed.
 const MIN_SIZE: (f32, f32) = (240.0, 120.0);
+
+/// The side a resize's width follows: its left edge moves the window's left
+/// side (its right stays put), its right edge the right side.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Side {
+    Left,
+    Right,
+    Neither,
+}
+
+/// A resize: which edges follow the pointer, and the window's top left and
+/// size when pressed.
+#[derive(Clone, Copy)]
+struct Resize {
+    side: Side,
+    bottom: bool,
+    origin: Point<Pixels>,
+    start: Size<Pixels>,
+}
 
 pub struct WinDrag {
     pub id: String,
@@ -25,20 +45,26 @@ pub struct WinDrag {
     down: Point<Pixels>,
     pointer: Point<Pixels>,
     moving: bool,
-    /// A resize instead of a move: which edges follow the pointer (right,
-    /// bottom) and the window's size when pressed.
-    resize: Option<(bool, bool, Size<Pixels>)>,
+    /// A resize instead of a move.
+    resize: Option<Resize>,
 }
 
 impl WinDrag {
-    /// The size a resize shows now, neither side below MIN_SIZE (also the one
-    /// not dragged, so a saved size always passes `size_of`).
-    fn size(&self) -> Option<Size<Pixels>> {
-        let (right, bottom, start) = self.resize?;
+    /// Where a resize puts the window now (top left, size), neither side below
+    /// MIN_SIZE (also the one not dragged, so a saved size always passes
+    /// `size_of`); from the left, the right side stays where it was.
+    fn frame(&self) -> Option<(Point<Pixels>, Size<Pixels>)> {
+        let r = self.resize?;
         let grow = self.pointer - self.down;
-        let w = if right { start.width + grow.x } else { start.width };
-        let h = if bottom { start.height + grow.y } else { start.height };
-        Some(size(w.max(settings::z(MIN_SIZE.0)), h.max(settings::z(MIN_SIZE.1))))
+        let w = match r.side {
+            Side::Right => r.start.width + grow.x,
+            Side::Left => r.start.width - grow.x,
+            Side::Neither => r.start.width,
+        }
+        .max(settings::z(MIN_SIZE.0));
+        let h = if r.bottom { r.start.height + grow.y } else { r.start.height }.max(settings::z(MIN_SIZE.1));
+        let x = if r.side == Side::Left { r.origin.x + r.start.width - w } else { r.origin.x };
+        Some((point(x, r.origin.y), size(w, h)))
     }
 }
 
@@ -116,10 +142,10 @@ impl AppWindow {
         }
     }
 
-    /// The size a window being resized shows now (it replaces its own while the
-    /// press lasts).
-    pub(super) fn resizing(&self, id: &str) -> Option<Size<Pixels>> {
-        self.win_drag.as_ref().filter(|d| d.id == id && d.moving).and_then(WinDrag::size)
+    /// Where a window being resized shows now, top left and size (they replace
+    /// its own while the press lasts).
+    pub(super) fn resizing(&self, id: &str) -> Option<(Point<Pixels>, Size<Pixels>)> {
+        self.win_drag.as_ref().filter(|d| d.id == id && d.moving).and_then(WinDrag::frame)
     }
 
     /// A window at its spot: where it was dropped, else centered once its size
@@ -127,9 +153,10 @@ impl AppWindow {
     pub(super) fn render_window(&self, o: &Overlay, body: Stateful<Div>, viewport: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
         let measured = self.bounds.borrow().get(&o.slot).map(|b| b.size);
         let size = measured.unwrap_or_default();
-        let at = match (&self.win_drag, o.place) {
-            (Some(d), _) if d.id == o.id && d.moving && d.resize.is_none() => d.pointer - d.grab,
-            (_, Some(p)) => p,
+        let at = match (&self.win_drag, o.place, self.resizing(&o.id)) {
+            (_, _, Some((p, _))) => p,
+            (Some(d), _, _) if d.id == o.id && d.moving && d.resize.is_none() => d.pointer - d.grab,
+            (_, Some(p), _) => p,
             _ => point((viewport.width - size.width) / 2.0, (viewport.height - size.height) / 2.0),
         };
         let keep = px(KEEP_SHOWN);
@@ -151,7 +178,7 @@ impl AppWindow {
         };
         let (raise, press) = (o.id.clone(), o.id.clone());
         // Over the content's edges, drawn after it so they get the press first.
-        let grip = |name: &str, right: bool, bottom: bool, cursor: CursorStyle| {
+        let grip = |name: &str, side: Side, bottom: bool, cursor: CursorStyle| {
             let id = o.id.clone();
             div()
                 .id(SharedString::from(format!("ov-rz-{name}-{}", o.id)))
@@ -162,16 +189,18 @@ impl AppWindow {
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        this.resize_press(&id, ev.position, right, bottom, cx);
+                        this.resize_press(&id, ev.position, side, bottom, cx);
                     }),
                 )
         };
         let g = settings::z(GRIP);
         let grips: Vec<AnyElement> = if o.resizable {
             vec![
-                grip("r", true, false, CursorStyle::ResizeLeftRight).top_0().right_0().bottom(g * 2.).w(g).into_any_element(),
-                grip("b", false, true, CursorStyle::ResizeUpDown).left_0().bottom_0().right(g * 2.).h(g).into_any_element(),
-                grip("br", true, true, CursorStyle::ResizeUpLeftDownRight).right_0().bottom_0().w(g * 2.).h(g * 2.).into_any_element(),
+                grip("l", Side::Left, false, CursorStyle::ResizeLeftRight).top_0().left_0().bottom(g * 2.).w(g).into_any_element(),
+                grip("r", Side::Right, false, CursorStyle::ResizeLeftRight).top_0().right_0().bottom(g * 2.).w(g).into_any_element(),
+                grip("b", Side::Neither, true, CursorStyle::ResizeUpDown).left(g * 2.).bottom_0().right(g * 2.).h(g).into_any_element(),
+                grip("bl", Side::Left, true, CursorStyle::ResizeUpRightDownLeft).left_0().bottom_0().w(g * 2.).h(g * 2.).into_any_element(),
+                grip("br", Side::Right, true, CursorStyle::ResizeUpLeftDownRight).right_0().bottom_0().w(g * 2.).h(g * 2.).into_any_element(),
             ]
         } else {
             Vec::new()
@@ -215,18 +244,17 @@ impl AppWindow {
         cx.notify();
     }
 
-    /// A press on a resizable window's edge: the window stays where it is drawn
-    /// now (a centered one is pinned there, so it grows right and down).
-    fn resize_press(&mut self, id: &str, at: Point<Pixels>, right: bool, bottom: bool, cx: &mut Context<Self>) {
+    /// A press on a resizable window's edge: the window is pinned where it is
+    /// drawn now (a centered one too), and the pressed edges follow the pointer.
+    fn resize_press(&mut self, id: &str, at: Point<Pixels>, side: Side, bottom: bool, cx: &mut Context<Self>) {
         // The grip occludes the body, whose capture handler raises a pressed window.
         self.raise_window(id, cx);
         let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
-        if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id)
-            && o.place.is_none()
-        {
+        if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id) {
             o.place = Some(b.origin);
         }
-        self.win_drag = Some(WinDrag { id: id.to_owned(), grab: at - b.origin, down: at, pointer: at, moving: false, resize: Some((right, bottom, b.size)) });
+        let resize = Resize { side, bottom, origin: b.origin, start: b.size };
+        self.win_drag = Some(WinDrag { id: id.to_owned(), grab: at - b.origin, down: at, pointer: at, moving: false, resize: Some(resize) });
         cx.notify();
     }
 
@@ -255,16 +283,15 @@ impl AppWindow {
             return false;
         }
         let Some(o) = self.overlays.iter_mut().find(|o| o.id == d.id) else { return true };
-        if let Some(s) = d.size() {
+        if let Some((p, s)) = d.frame() {
             let zoom = settings::zoom();
             let designed = size(f32::from(s.width) / zoom, f32::from(s.height) / zoom);
             o.size = designed;
             o.fit = false;
+            o.place = Some(p);
             if let Some(k) = &o.key {
                 remember_size(k, designed);
-                if let Some(p) = o.place {
-                    remember(k, p);
-                }
+                remember(k, p);
             }
         } else {
             let at = d.pointer - d.grab;

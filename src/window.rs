@@ -329,7 +329,7 @@ struct Overlay {
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
-    /// A window `resizable: true` (fork): its right and bottom edges resize it.
+    /// A window `resizable: true` (fork): its left, right and bottom edges resize it.
     resizable: bool,
 }
 
@@ -4273,7 +4273,7 @@ impl AppWindow {
             let id = o.id.clone();
             // Up to 1: a share of the window (terminals in overlays want room, not px).
             let span = |v: f32, full: Pixels| if v <= 1.0 { full * v } else { settings::z(v) };
-            let resizing = self.resizing(&o.id);
+            let resizing = self.resizing(&o.id).map(|(_, s)| s);
             let (w, h) = resizing.map_or_else(|| (span(o.size.width, viewport.width), span(o.size.height, viewport.height)), |s| (s.width, s.height));
             let sized = |v: f32| v > 0.0 || o.kind != OverlayKind::Window || resizing.is_some();
             let content = match &o.layout {
