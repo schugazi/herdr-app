@@ -182,7 +182,10 @@ impl AppWindow {
                 },
                 |_, _, _, _| {},
             )
+            // Anchored: after the body in block flow, an unset inset would put it below.
             .absolute()
+            .top_0()
+            .left_0()
             .size_full()
         };
         let (raise, press) = (o.id.clone(), o.id.clone());
