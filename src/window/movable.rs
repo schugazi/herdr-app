@@ -31,13 +31,14 @@ pub struct WinDrag {
 }
 
 impl WinDrag {
-    /// The size a resize shows now, never below MIN_SIZE.
+    /// The size a resize shows now, neither side below MIN_SIZE (also the one
+    /// not dragged, so a saved size always passes `size_of`).
     fn size(&self) -> Option<Size<Pixels>> {
         let (right, bottom, start) = self.resize?;
         let grow = self.pointer - self.down;
-        let w = if right { (start.width + grow.x).max(settings::z(MIN_SIZE.0)) } else { start.width };
-        let h = if bottom { (start.height + grow.y).max(settings::z(MIN_SIZE.1)) } else { start.height };
-        Some(size(w, h))
+        let w = if right { start.width + grow.x } else { start.width };
+        let h = if bottom { start.height + grow.y } else { start.height };
+        Some(size(w.max(settings::z(MIN_SIZE.0)), h.max(settings::z(MIN_SIZE.1))))
     }
 }
 
@@ -217,6 +218,8 @@ impl AppWindow {
     /// A press on a resizable window's edge: the window stays where it is drawn
     /// now (a centered one is pinned there, so it grows right and down).
     fn resize_press(&mut self, id: &str, at: Point<Pixels>, right: bool, bottom: bool, cx: &mut Context<Self>) {
+        // The grip occludes the body, whose capture handler raises a pressed window.
+        self.raise_window(id, cx);
         let Some(b) = self.bounds.borrow().get(&format!("overlay:{id}")).copied() else { return };
         if let Some(o) = self.overlays.iter_mut().find(|o| o.id == id)
             && o.place.is_none()
