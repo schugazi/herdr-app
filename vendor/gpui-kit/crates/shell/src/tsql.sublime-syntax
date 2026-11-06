@@ -1,0 +1,89 @@
+%YAML 1.2
+---
+# HERDR fork: T-SQL (SQL Server) for .sql files. It replaces syntect's default
+# SQL grammar, which reads T-SQL's #temp tables as comments and leaves
+# @variables, [names] and most functions uncolored. Scope names follow VS
+# Code's SQL grammar where it has one (text.variable, text.bracketed,
+# constant.other.database-name/table-name), so VS Code colors map onto them.
+name: SQL
+file_extensions: [sql]
+scope: source.tsql
+contexts:
+  main:
+    - match: '--'
+      push: line-comment
+    - match: '/\*'
+      push: block-comment
+    - match: "(?i)N?'"
+      scope: punctuation.definition.string.begin.sql
+      push: single-string
+    - match: '"'
+      scope: punctuation.definition.string.begin.sql
+      push: double-string
+    # ]] escapes a ] inside a bracketed name.
+    - match: '\[(?:[^\]\n]|\]\])*\]'
+      scope: text.bracketed.sql
+    # @ and # inside a name (account@id) are part of it.
+    - match: '(?<![\w#$@])@@?[\w#$@]+'
+      scope: text.variable.sql
+    # #temp and ##global temp tables are names, not comments.
+    - match: '(?<![\w#$@])##?[\w#$@]+'
+    - match: '(?i)\b0x[0-9a-f]*\b'
+      scope: constant.numeric.sql
+    - match: '\b\d+(\.\d*)?([eE][-+]?\d+)?\b|\.\d+\b'
+      scope: constant.numeric.sql
+    # schema.table.column: every part before a dot, then the last part
+    # (unless it is called), as VS Code's grammar names them.
+    - match: '(?<=\.)[A-Za-z_][\w#$@]*\b(?!\s*[.(])'
+      scope: constant.other.table-name.sql
+    - match: '\b[A-Za-z_][\w#$@]*(?=\.)'
+      scope: constant.other.database-name.sql
+    - match: '(?i)\b(if|else|while|break|continue|return|goto|begin|end|try|catch|throw|waitfor)\b'
+      scope: keyword.control.flow.sql
+    # SSMS's operator words (its dark gray), apart from the other keywords:
+    # logic, NULL and joins (LEFT( and RIGHT( are the string functions).
+    - match: '(?i)\b(and|or|not|in|is|like|between|exists|all|any|some|null)\b'
+      scope: keyword.operator.logical.sql
+    - match: '(?i)\b(join|inner|outer|left|right|cross|full)\b(?!\s*\()'
+      scope: keyword.operator.logical.sql
+    - match: '(?i)\b(bigint|int|smallint|tinyint|bit|decimal|numeric|money|smallmoney|float|real|date|datetime|datetime2|datetimeoffset|smalldatetime|time|char|varchar|text|nchar|nvarchar|ntext|binary|varbinary|image|uniqueidentifier|xml|sql_variant|rowversion|hierarchyid|geography|geometry|sysname)\b'
+      scope: storage.type.sql
+    - match: '(?i)\b(add|alter|apply|as|asc|authorization|by|cascade|case|check|close|clustered|collate|column|commit|constraint|create|cursor|database|deallocate|declare|default|delete|deny|desc|distinct|drop|exec|execute|except|fetch|for|foreign|from|function|go|grant|group|having|holdlock|identity|include|index|insert|intersect|into|key|merge|next|nocount|nolock|nonclustered|of|off|offset|on|open|option|order|output|over|partition|percent|pivot|primary|print|proc|procedure|raiserror|references|returns|revoke|rollback|row|rows|save|schema|select|set|table|then|to|top|tran|transaction|trigger|truncate|union|unique|unpivot|update|use|using|values|view|when|where|with)\b'
+      scope: keyword.other.sql
+    # Aggregates are calls with a space before ( too; any other name only
+    # without one, since `INSERT INTO t (a, b)` names a table.
+    - match: '(?i)\b(count|count_big|sum|avg|min|max|stdev|stdevp|var|varp|string_agg|grouping)\b(?=\s*\()'
+      scope: support.function.sql
+    - match: '\b[A-Za-z_][\w#$@]*(?=\()'
+      scope: support.function.sql
+    - match: '[-+*/%=<>!&|^~]+'
+      scope: keyword.operator.sql
+
+  line-comment:
+    - meta_scope: comment.line.double-dash.sql
+    - match: '$\n?'
+      pop: true
+
+  # T-SQL block comments nest.
+  block-comment:
+    - meta_scope: comment.block.sql
+    - match: '/\*'
+      push: block-comment
+    - match: '\*/'
+      pop: true
+
+  single-string:
+    - meta_scope: string.quoted.single.sql
+    - match: "''"
+      scope: constant.character.escape.sql
+    - match: "'"
+      scope: punctuation.definition.string.end.sql
+      pop: true
+
+  double-string:
+    - meta_scope: string.quoted.double.sql
+    - match: '""'
+      scope: constant.character.escape.sql
+    - match: '"'
+      scope: punctuation.definition.string.end.sql
+      pop: true

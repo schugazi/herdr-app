@@ -6,13 +6,21 @@ use gpui_base::input::{
     EditorState, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter, Rope,
 };
 use syntect::{
-    parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet},
+    parsing::{ParseState, Scope, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet},
     util::LinesWithEndings,
 };
 
 /// Loading the default syntax definitions deserializes a few megabytes, so share
 /// one set across every highlighter instance.
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+/// HERDR fork: plus a T-SQL grammar, which wins .sql over the default SQL one
+/// (lookups search the last added first).
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(|| {
+    let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+    let tsql = SyntaxDefinition::load_from_str(include_str!("tsql.sublime-syntax"), true, None)
+        .expect("tsql.sublime-syntax parses");
+    builder.add(tsql);
+    builder.build()
+});
 
 /// A small, WASM-compatible example adapter for Base's parser-independent
 /// highlighting API. Syntect identifies scopes; the application-owned resolver
@@ -218,8 +226,12 @@ fn semantic_name(scope: Scope) -> Option<&'static str> {
         "variable.parameter"
     } else if is(&scope, "meta.generic-name") {
         "variable.generic"
-    } else if is(&scope, "support.variable") || is(&scope, "constant.other.placeholder") {
-        // __name__, __file__ and %-format placeholders, as VS Code colors them.
+    } else if is(&scope, "support.variable")
+        || is(&scope, "constant.other.placeholder")
+        || is(&scope, "text.variable")
+    {
+        // __name__, __file__, %-format placeholders and SQL's @variables, as
+        // VS Code colors them.
         "variable"
     } else if is(&scope, "entity.other.inherited-class") {
         "type"
@@ -446,5 +458,39 @@ mod tests {
         let class = names("py", "class Foo(Base): pass\n");
         assert!(class.contains(&("Foo", Some("type"))));
         assert!(class.contains(&("Base", Some("type"))));
+    }
+
+    #[test]
+    fn sql_is_t_sql() {
+        let sql = names(
+            "sql",
+            "IF @n IS NULL SELECT c.id, GETDATE(), N'a''b' FROM #tmp -- x\n",
+        );
+        for token in [
+            ("IF", "keyword.control"),
+            ("@n", "variable"),
+            ("IS", "operator.logical"),
+            ("NULL", "operator.logical"),
+            ("SELECT", "keyword"),
+            ("c", "constant"),
+            ("id", "constant"),
+            ("GETDATE", "function"),
+            ("''", "string.escape"),
+            ("FROM", "keyword"),
+            ("-- x\n", "comment"),
+        ] {
+            assert!(sql.contains(&(token.0, Some(token.1))), "{token:?} in {sql:?}");
+        }
+        // #tmp is a temp table's name, not a comment.
+        assert!(sql.iter().any(|(token, name)| token.contains("#tmp") && name.is_none()), "{sql:?}");
+        let joins = names("sql", "FROM a LEFT JOIN b ON LEFT(x, 1) = y\n");
+        assert_eq!(joins[2], ("LEFT", Some("operator.logical")), "{joins:?}");
+        assert!(joins.contains(&("JOIN", Some("operator.logical"))), "{joins:?}");
+        assert!(joins.contains(&("LEFT", Some("function"))), "{joins:?}");
+        let more = names("sql", "SELECT [a']]'b], account@id, COUNT (*) FROM t\n");
+        assert!(more.contains(&("[a']]'b]", None)), "{more:?}");
+        assert!(more.contains(&("COUNT", Some("function"))), "{more:?}");
+        assert!(more.contains(&("FROM", Some("keyword"))), "{more:?}");
+        assert!(!more.iter().any(|(_, name)| *name == Some("variable")), "{more:?}");
     }
 }
