@@ -3168,6 +3168,10 @@ const BASE: &str = r#"  /** A row. */
        * constant, variable, operator, punctuation, boolean, string.escape,
        * property (keys, members), tag, attribute, heading, bold, italic, code,
        * link, inserted, deleted. bold and italic also set weight and slant.
+       * Finer names fall back to their root's color: keyword.control,
+       * operator.logical, string.regexp, function.decorator, type.namespace,
+       * variable.language, variable.constant, variable.parameter,
+       * constant.language, punctuation.embedded.
        * Values are concrete hex colors; unspecified UI colors follow the theme. */
       syntax?: Record<string, string>;
     }) => EditorState;

@@ -52,7 +52,7 @@ impl SyntectHighlighter {
 
 /// The innermost scope with a semantic name names the range, except that a
 /// string inside a mapping key (JSON's and JS's quoted keys) is a property, as
-/// YAML's plain keys are.
+/// YAML's plain keys are, and a bare name takes the name it declares.
 fn stack_name(
     names: &mut HashMap<Scope, Option<&'static str>>,
     scopes: &[Scope],
@@ -62,6 +62,13 @@ fn stack_name(
         .rev()
         .filter_map(|scope| *names.entry(*scope).or_insert_with(|| semantic_name(*scope)));
     match named.next()? {
+        // Python wraps every identifier in meta.generic-name, a declared
+        // function's or class's name and an imported one too; any other is a
+        // variable.
+        "variable.generic" => match named.next() {
+            Some(outer @ ("function" | "type" | "type.namespace")) => Some(outer),
+            _ => Some("variable"),
+        },
         "string" if named.any(|outer| outer == "property") => Some("property"),
         // Markdown's ***both*** nests one emphasis in the other; keep both.
         "bold" if named.any(|outer| outer == "italic") => Some("bold.italic"),
@@ -181,10 +188,46 @@ fn resolve_styles(
 
 fn semantic_name(scope: Scope) -> Option<&'static str> {
     let scope = scope.build_string();
-    let name = if scope.starts_with("comment") {
+    // Finer names (keyword.control, variable.language, …) fall back to their
+    // root's color when the editor's syntax map leaves them out.
+    let name = if scope.starts_with("comment") || is(&scope, "punctuation.definition.comment") {
         "comment"
+    } else if is(&scope, "punctuation.definition.string") {
+        // Quotes take their string's color, as in VS Code.
+        "string"
     } else if scope.starts_with("constant.character.escape") {
+        // Before regexp, which tags its own escapes (constant.character.escape.backslash.regexp).
         "string.escape"
+    } else if is(&scope, "string.regexp") || is(&scope, "source.regexp") || scope.ends_with(".regexp") {
+        "string.regexp"
+    } else if is(&scope, "punctuation.section.interpolation") {
+        "punctuation.embedded"
+    } else if is(&scope, "keyword.operator.logical") {
+        "operator.logical"
+    } else if is(&scope, "keyword.control") || is(&scope, "keyword.other.await") {
+        "keyword.control"
+    } else if is(&scope, "variable.function") {
+        "function"
+    } else if is(&scope, "variable.annotation") || is(&scope, "punctuation.definition.annotation") {
+        "function.decorator"
+    } else if is(&scope, "variable.language") {
+        "variable.language"
+    } else if is(&scope, "variable.other.constant") {
+        "variable.constant"
+    } else if is(&scope, "variable.parameter") {
+        "variable.parameter"
+    } else if is(&scope, "meta.generic-name") {
+        "variable.generic"
+    } else if is(&scope, "support.variable") || is(&scope, "constant.other.placeholder") {
+        // __name__, __file__ and %-format placeholders, as VS Code colors them.
+        "variable"
+    } else if is(&scope, "entity.other.inherited-class") {
+        "type"
+    } else if is(&scope, "meta.statement.import") || is(&scope, "meta.import-name") {
+        // Python's import lines name modules and what they export.
+        "type.namespace"
+    } else if is(&scope, "constant.language") && !is(&scope, "constant.language.boolean") {
+        "constant.language"
     } else if is(&scope, "markup.inserted") {
         "inserted"
     } else if is(&scope, "markup.deleted") {
@@ -373,5 +416,35 @@ mod tests {
         let html = names("html", "<a href=\"x\">\n");
         assert!(html.contains(&("a", Some("tag"))));
         assert!(html.contains(&("href", Some("attribute"))));
+    }
+
+    #[test]
+    fn python_names_follow_its_grammar() {
+        let def = names("py", "def run(self, n): return self.x(n) or None\n");
+        for token in [
+            ("def", "keyword"),
+            ("run", "function"),
+            ("self", "variable.parameter"),
+            ("return", "keyword.control"),
+            ("self", "variable.language"),
+            ("x", "function"),
+            ("n", "variable"),
+            ("or", "operator.logical"),
+            ("None", "constant.language"),
+        ] {
+            assert!(def.contains(&(token.0, Some(token.1))), "{token:?} in {def:?}");
+        }
+        let strings = names("py", "x = __name__ % re.compile(r\"a\\n\") % \"v=%s\"\n");
+        assert!(strings.contains(&("__name__", Some("variable"))), "{strings:?}");
+        assert!(strings.contains(&("\\n", Some("string.escape"))), "{strings:?}");
+        assert!(strings.contains(&("a", Some("string.regexp"))), "{strings:?}");
+        assert!(strings.contains(&("%s", Some("variable"))), "{strings:?}");
+        let import = names("py", "from typing import Optional\n");
+        assert!(import.contains(&("typing", Some("type.namespace"))));
+        assert!(import.contains(&("Optional", Some("type.namespace"))));
+        assert!(import.contains(&("import", Some("keyword.control"))));
+        let class = names("py", "class Foo(Base): pass\n");
+        assert!(class.contains(&("Foo", Some("type"))));
+        assert!(class.contains(&("Base", Some("type"))));
     }
 }
