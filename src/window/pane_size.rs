@@ -115,8 +115,9 @@ fn pane_size(n: &Node, size: Size<Pixels>, target: &str, frame: Option<&PaneFram
     }
 }
 
-/// The tab area and the cell size.
-type Geometry = (Size<Pixels>, Size<Pixels>);
+/// The shown space, the tab area and the cell size. The space is part of it since only
+/// its hidden tabs are sized: another space shown in the same area still needs its own.
+type Geometry = (Option<String>, Size<Pixels>, Size<Pixels>);
 
 /// Whether hidden tabs fit the window: the geometry seen at the last tick, and
 /// whether they were sized for it.
@@ -164,23 +165,29 @@ impl AppWindow {
 
     /// Terminals in hidden tabs keep the size they last had on screen, so a tab shown
     /// after the window changed size draws its old screens, then jumps once the programs
-    /// redraw. Once the window settles (the same at two ticks), they are sized as their
-    /// panes would be, so the programs redraw out of sight.
+    /// redraw. Once the window settles (the same at two ticks), the shown space's other
+    /// tabs are sized as their panes would be, so the programs redraw out of sight.
+    /// Other spaces' tabs are left alone: side panels a layout's mods remember per space
+    /// give each space its own tab area, so sizing them to this one's would resize their
+    /// programs on every switch, once out of sight and once more, on screen, on return.
     pub(super) fn fit_hidden_tabs(&mut self, window: &Window, cx: &App) {
         let Some((_, area)) = self.context_area() else { return };
         let cell = crate::terminal::cell_size(window);
-        let now = (area, cell);
-        match self.hidden_fit {
-            HiddenFit::Done(g) if g == now => return,
-            HiddenFit::Seen(g) if g == now => self.hidden_fit = HiddenFit::Done(now),
-            _ => {
-                self.hidden_fit = HiddenFit::Seen(now);
-                return;
-            }
+        let Some(space) = self.model.active_space() else { return };
+        let now = (Some(space.id.clone()), area, cell);
+        let settled = match &self.hidden_fit {
+            HiddenFit::Done(g) if *g == now => return,
+            HiddenFit::Seen(g) => *g == now,
+            _ => false,
+        };
+        if !settled {
+            self.hidden_fit = HiddenFit::Seen(now);
+            return;
         }
+        self.hidden_fit = HiddenFit::Done(now);
         let scale = window.scale_factor();
-        let active = self.model.active_tab().map(|t| t.id.clone());
-        for tab in self.model.tabs().filter(|t| Some(&t.id) != active.as_ref()) {
+        let active = space.active_tab().map(|t| t.id.clone());
+        for tab in space.tabs.iter().filter(|t| Some(&t.id) != active.as_ref()) {
             for pane in tab.shown().panes() {
                 if let Some(t) = self.terms.get(&pane.id)
                     && let Some((cols, rows)) = self.shown_size(tab, &pane.id, window)

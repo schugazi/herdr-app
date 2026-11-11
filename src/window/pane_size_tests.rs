@@ -173,12 +173,13 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     if !running_alone("hidden_tabs_follow") { return; }
     let main: serde_json::Value = serde_json::from_str(include_str!("../../defaults/layouts/main.json")).unwrap();
     let (view, cx) = open_window(cx, "size-probe", "export default () => null;", main);
-    // Tab "a" has two panes side by side; tab "b" is the one shown.
+    // Tab "a" has two panes side by side; tab "b" is the one shown. Tab "c" is in another space.
     let mut root = crate::model::pane("a", "probe-a");
     root.split("a", super::Axis::Row, crate::model::pane("a2", "probe-a2"), "s".into());
     view.update_in(cx, |this, window, cx| {
         this.folders.retain(|id, _| id == "size-probe");
         this.model = crate::model::Model::default();
+        this.model.add_space("elsewhere", "other", "/", super::Tab::new("tc", "", "c", "probe-c"));
         let mut tab = super::Tab::new("ta", "", "a", "probe-a");
         tab.root = root;
         tab.focus("a2");
@@ -188,7 +189,9 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let dims = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| ["a", "a2"].map(|p| this.terms[p].view.read(cx).dimensions()));
+    let other = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.terms.get("c").map(|t| t.view.read(cx).dimensions()));
     let before = dims(cx);
+    let other_before = other(cx);
     cx.simulate_resize(size(px(1400.0), px(900.0)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     // The first tick after a change waits for the window to settle; the second sizes them.
@@ -198,6 +201,8 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     let fitted = dims(cx);
     eprintln!("hidden tab: {before:?} before the window grew, {fitted:?} once it settled");
     assert_ne!(fitted, before, "a settled window must size the hidden tab's terminals");
+    // Another space may have another tab area (side panels remembered per space): its tabs keep their size.
+    assert_eq!(other(cx), other_before, "a settled window must leave other spaces' tabs alone");
     // Shown, the panes draw with the size they were given: nothing changes.
     view.update_in(cx, |this, window, cx| {
         this.model.select_tab("ta");
@@ -205,4 +210,22 @@ fn hidden_tabs_follow(cx: &mut gpui::TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(dims(cx), fitted, "hidden tabs must have been sized as their panes draw them");
+    // The window resized while another space is shown, then this space back in the same area:
+    // its hidden tab ("b", now that "a" is shown) is still sized once that settles.
+    let b = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, cx| this.terms["b"].view.read(cx).dimensions());
+    view.update_in(cx, |this, window, cx| {
+        this.model.active = Some("elsewhere".into());
+        this.sync(window, cx);
+    });
+    cx.simulate_resize(size(px(1100.0), px(700.0)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    for _ in 0..2 { view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx)); }
+    let b_before = b(cx);
+    view.update_in(cx, |this, window, cx| {
+        this.model.active = Some("space".into());
+        this.sync(window, cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    for _ in 0..2 { view.update_in(cx, |this, window, cx| this.fit_hidden_tabs(window, cx)); }
+    assert_ne!(b(cx), b_before, "a space shown again in the area another was sized for must still size its hidden tabs");
 }
