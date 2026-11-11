@@ -58,6 +58,12 @@ struct Grid {
     channel: Option<u32>,
     attach_ready: bool,
     fit_ready: Option<async_channel::Sender<()>>,
+    /// Whether a prepaint has sized it yet: its first size goes out at once (`settle`).
+    laid_out: bool,
+    /// Since when the pane's size on screen differs from the screen's, until it goes out (`settle`).
+    settling: Option<Instant>,
+    /// When a prepaint last sized it: a wait restarts after a gap, the pane hidden meanwhile (`settle`).
+    prepainted: Option<Instant>,
     cell: Size<Pixels>,
     /// The window's scale factor, from the last prepaint. Programs see cells,
     /// images and pixel mouse reports in device pixels, as in Ghostty.
@@ -214,7 +220,37 @@ impl Grid {
             self.core.automatic_input(chan, &replies);
         }
     }
+
+    /// `fit` for the pane's size on screen, which goes out only once it has held for
+    /// SETTLE; true while one waits, so the caller draws again. A layout can be wrong for
+    /// a frame or two: a space switch draws the new space with the last one's side panels
+    /// until the mod that remembers them per space restores its own, and each size that
+    /// went out would have the program (Claude Code) redraw its whole screen, twice. Until
+    /// then the screen keeps its old size in the pane. Further changes while one waits
+    /// don't restart it, so a drag still resizes the program every SETTLE; a gap in the
+    /// prepaints does (the pane was hidden), so a pane shown again waits afresh.
+    fn settle(&mut self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32) -> bool {
+        let now = Instant::now();
+        let resumed = self.prepainted.is_some_and(|at| now - at > SETTLE / 2);
+        self.prepainted = Some(now);
+        let unchanged = (cols, rows) == (self.vt.cols, self.vt.rows) && device_cell(cell, scale) == self.vt_cell;
+        let since = match self.settling {
+            _ if unchanged || !self.laid_out => None,
+            Some(since) if !resumed && now - since < SETTLE => Some(since),
+            Some(_) if !resumed => None,
+            _ => Some(now),
+        };
+        self.laid_out = true;
+        self.settling = since;
+        if self.settling.is_none() {
+            self.fit(cols, rows, cell, scale);
+        }
+        self.settling.is_some()
+    }
 }
+
+/// How long a terminal's new size on screen must hold before its program hears of it.
+const SETTLE: Duration = Duration::from_millis(100);
 
 /// A cell in device pixels.
 fn device_cell(cell: Size<Pixels>, scale: f32) -> (u32, u32) {
@@ -260,6 +296,9 @@ impl TerminalView {
                 channel: None,
                 attach_ready: false,
                 fit_ready: None,
+                laid_out: false,
+                settling: None,
+                prepainted: None,
                 cell: size(px(9.0), px(18.0)),
                 scale: 1.0,
                 vt_cell: (9, 18),
@@ -2073,10 +2112,17 @@ impl Render for TerminalView {
                 canvas(
                     move |bounds, window, _cx| {
                         let (cols, rows) = grid_size(bounds.size, cell);
-                        grid.borrow_mut().fit(cols, rows, cell, window.scale_factor());
+                        if grid.borrow_mut().settle(cols, rows, cell, window.scale_factor()) {
+                            window.request_animation_frame();
+                        }
                     },
                     move |bounds, _, window, cx| {
-                        paint_grid(bounds, &grid_paint, focused, blink_off, window, cx);
+                        // A screen waiting to resize may be larger than its pane: kept inside it.
+                        if grid_paint.borrow().settling.is_some() {
+                            window.with_content_mask(Some(ContentMask { bounds }), |window| paint_grid(bounds, &grid_paint, focused, blink_off, window, cx));
+                        } else {
+                            paint_grid(bounds, &grid_paint, focused, blink_off, window, cx);
+                        }
                         let view = selection_view.clone();
                         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {
@@ -2286,6 +2332,44 @@ mod tests {
             assert!(terminal.lost, "the fitted pane must attempt to attach");
             assert_eq!(terminal.dimensions(), (114, 30));
         });
+    }
+
+    #[test]
+    fn a_size_on_screen_goes_out_once_it_holds() {
+        use gpui::*;
+
+        let core = crate::hc::offline();
+        let mut grid = super::Grid {
+            vt: crate::vt::Vt::new(120, 40), core, channel: None, attach_ready: false, fit_ready: None, laid_out: false, settling: None, prepainted: None,
+            cell: size(px(9.0), px(18.0)), scale: 1.0, vt_cell: (9, 18), told_display: None, origin: Point::default(),
+            buttons_down: Vec::new(), images: Default::default(), hover: None, link_spans: Vec::new(), marked: None,
+            cursor_at: None, thumb: None, track: None, painted: Vec::new(), painted_with: (0, Size::default(), String::new(), 0, false),
+        };
+        let cell = size(px(8.), px(18.));
+        let dims = |g: &super::Grid| (g.vt.cols, g.vt.rows);
+        assert!(!grid.settle(114, 30, cell, 1.), "the first size goes out at once");
+        assert_eq!(dims(&grid), (114, 30));
+        // A frame at another size, then back: the program never hears of it.
+        assert!(grid.settle(160, 30, cell, 1.));
+        assert_eq!(dims(&grid), (114, 30));
+        assert!(!grid.settle(114, 30, cell, 1.));
+        assert_eq!(dims(&grid), (114, 30));
+        // A size that holds, drawn all along, goes out after SETTLE.
+        assert!(grid.settle(160, 30, cell, 1.));
+        let start = std::time::Instant::now();
+        while start.elapsed() < 3 * super::SETTLE {
+            std::thread::sleep(super::SETTLE / 5);
+            if !grid.settle(160, 30, cell, 1.) { break; }
+        }
+        assert_eq!(dims(&grid), (160, 30));
+        // Hidden while it waits, then shown again past the deadline: it waits afresh, so a
+        // frame laid out with another space's panels still never reaches the program.
+        assert!(grid.settle(100, 30, cell, 1.));
+        std::thread::sleep(super::SETTLE + std::time::Duration::from_millis(10));
+        assert!(grid.settle(120, 30, cell, 1.));
+        assert_eq!(dims(&grid), (160, 30));
+        assert!(!grid.settle(160, 30, cell, 1.));
+        assert_eq!(dims(&grid), (160, 30));
     }
 
     #[gpui::test]
