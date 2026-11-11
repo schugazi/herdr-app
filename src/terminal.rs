@@ -58,8 +58,6 @@ struct Grid {
     channel: Option<u32>,
     attach_ready: bool,
     fit_ready: Option<async_channel::Sender<()>>,
-    /// Whether a prepaint has sized it yet: its first size goes out at once (`settle`).
-    laid_out: bool,
     /// Since when the pane's size on screen differs from the screen's, until it goes out (`settle`).
     settling: Option<Instant>,
     /// When a prepaint last sized it: a wait restarts after a gap, the pane hidden meanwhile (`settle`).
@@ -221,26 +219,34 @@ impl Grid {
         }
     }
 
-    /// `fit` for the pane's size on screen, which goes out only once it has held for
-    /// SETTLE; true while one waits, so the caller draws again. A layout can be wrong for
-    /// a frame or two: a space switch draws the new space with the last one's side panels
-    /// until the mod that remembers them per space restores its own, and each size that
-    /// went out would have the program (Claude Code) redraw its whole screen, twice. Until
-    /// then the screen keeps its old size in the pane. Further changes while one waits
-    /// don't restart it, so a drag still resizes the program every SETTLE; a gap in the
-    /// prepaints does (the pane was hidden), so a pane shown again waits afresh.
+    /// `fit` for the pane's size on screen: once the pane's size differs from the screen's,
+    /// the pane's size then goes out SETTLE later, if it still differs (back to the
+    /// screen's size meanwhile, nothing goes out); true while one waits, so the caller
+    /// draws again. A layout can be wrong for a frame or two: a space switch draws the new
+    /// space with the last one's side panels until the mod that remembers them per space
+    /// restores its own, and each size that went out would have the program (Claude Code)
+    /// redraw its whole screen, twice. Until then the screen keeps its old size in the
+    /// pane. Further changes while one waits don't restart it, so a drag still resizes the
+    /// program every SETTLE; a gap of SETTLE in the prepaints does (the pane was hidden), so
+    /// a pane shown again waits afresh. Limit: at under 10 frames a second every wait
+    /// restarts, so a new size waits for a faster frame (an unfocused window still draws
+    /// at 30). Sizes go out at once before the terminal attaches (its first), and with a
+    /// new cell (font size, zoom, another display's scale), which the screen is drawn with.
     fn settle(&mut self, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32) -> bool {
-        let now = Instant::now();
-        let resumed = self.prepainted.is_some_and(|at| now - at > SETTLE / 2);
+        self.settle_at(Instant::now(), cols, rows, cell, scale)
+    }
+
+    fn settle_at(&mut self, now: Instant, cols: u16, rows: u16, cell: Size<Pixels>, scale: f32) -> bool {
+        let resumed = self.prepainted.is_some_and(|at| now - at >= SETTLE);
         self.prepainted = Some(now);
-        let unchanged = (cols, rows) == (self.vt.cols, self.vt.rows) && device_cell(cell, scale) == self.vt_cell;
+        let same_cell = cell == self.cell && device_cell(cell, scale) == self.vt_cell;
+        let unchanged = (cols, rows) == (self.vt.cols, self.vt.rows);
         let since = match self.settling {
-            _ if unchanged || !self.laid_out => None,
+            _ if unchanged || !same_cell || !self.attach_ready => None,
             Some(since) if !resumed && now - since < SETTLE => Some(since),
             Some(_) if !resumed => None,
             _ => Some(now),
         };
-        self.laid_out = true;
         self.settling = since;
         if self.settling.is_none() {
             self.fit(cols, rows, cell, scale);
@@ -249,7 +255,7 @@ impl Grid {
     }
 }
 
-/// How long a terminal's new size on screen must hold before its program hears of it.
+/// How long after a terminal's size on screen first changes its program hears of it (`Grid::settle`).
 const SETTLE: Duration = Duration::from_millis(100);
 
 /// A cell in device pixels.
@@ -296,7 +302,6 @@ impl TerminalView {
                 channel: None,
                 attach_ready: false,
                 fit_ready: None,
-                laid_out: false,
                 settling: None,
                 prepainted: None,
                 cell: size(px(9.0), px(18.0)),
@@ -2340,36 +2345,38 @@ mod tests {
 
         let core = crate::hc::offline();
         let mut grid = super::Grid {
-            vt: crate::vt::Vt::new(120, 40), core, channel: None, attach_ready: false, fit_ready: None, laid_out: false, settling: None, prepainted: None,
+            vt: crate::vt::Vt::new(120, 40), core, channel: None, attach_ready: false, fit_ready: None, settling: None, prepainted: None,
             cell: size(px(9.0), px(18.0)), scale: 1.0, vt_cell: (9, 18), told_display: None, origin: Point::default(),
             buttons_down: Vec::new(), images: Default::default(), hover: None, link_spans: Vec::new(), marked: None,
             cursor_at: None, thumb: None, track: None, painted: Vec::new(), painted_with: (0, Size::default(), String::new(), 0, false),
         };
         let cell = size(px(8.), px(18.));
         let dims = |g: &super::Grid| (g.vt.cols, g.vt.rows);
-        assert!(!grid.settle(114, 30, cell, 1.), "the first size goes out at once");
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        assert!(!grid.settle_at(at(0), 114, 30, cell, 1.), "the first size goes out at once");
         assert_eq!(dims(&grid), (114, 30));
         // A frame at another size, then back: the program never hears of it.
-        assert!(grid.settle(160, 30, cell, 1.));
+        assert!(grid.settle_at(at(16), 160, 30, cell, 1.));
         assert_eq!(dims(&grid), (114, 30));
-        assert!(!grid.settle(114, 30, cell, 1.));
+        assert!(!grid.settle_at(at(33), 114, 30, cell, 1.));
         assert_eq!(dims(&grid), (114, 30));
-        // A size that holds, drawn all along, goes out after SETTLE.
-        assert!(grid.settle(160, 30, cell, 1.));
-        let start = std::time::Instant::now();
-        while start.elapsed() < 3 * super::SETTLE {
-            std::thread::sleep(super::SETTLE / 5);
-            if !grid.settle(160, 30, cell, 1.) { break; }
-        }
+        // A size drawn all along goes out SETTLE after it first showed, frames 50 ms apart
+        // (slower than an unfocused window's) included.
+        assert!(grid.settle_at(at(50), 160, 30, cell, 1.));
+        assert!(grid.settle_at(at(100), 160, 30, cell, 1.));
+        assert!(!grid.settle_at(at(150), 160, 30, cell, 1.));
         assert_eq!(dims(&grid), (160, 30));
         // Hidden while it waits, then shown again past the deadline: it waits afresh, so a
         // frame laid out with another space's panels still never reaches the program.
-        assert!(grid.settle(100, 30, cell, 1.));
-        std::thread::sleep(super::SETTLE + std::time::Duration::from_millis(10));
-        assert!(grid.settle(120, 30, cell, 1.));
+        assert!(grid.settle_at(at(166), 100, 30, cell, 1.));
+        assert!(grid.settle_at(at(400), 120, 30, cell, 1.));
         assert_eq!(dims(&grid), (160, 30));
-        assert!(!grid.settle(160, 30, cell, 1.));
+        assert!(!grid.settle_at(at(416), 160, 30, cell, 1.));
         assert_eq!(dims(&grid), (160, 30));
+        // A new cell (font size, zoom) goes out at once.
+        assert!(!grid.settle_at(at(433), 140, 28, size(px(9.), px(20.)), 1.));
+        assert_eq!(dims(&grid), (140, 28));
     }
 
     #[gpui::test]
