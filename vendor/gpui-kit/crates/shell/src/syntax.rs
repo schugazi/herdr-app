@@ -158,6 +158,53 @@ impl InputHighlighter for SyntectHighlighter {
     }
 }
 
+/// One line's pieces, each with the semantic name the editor colors it by
+/// (None where it names nothing).
+pub type HighlightedLine = Vec<(String, Option<&'static str>)>;
+
+/// HERDR fork: `text` highlighted as an editor in `language` would, for code
+/// shown outside one (a mod's diff): one entry per `\n`-separated line, its
+/// pieces in order spelling the line (a `\r` before the `\n` stays in its last
+/// piece), adjacent pieces of one name joined. None when no grammar knows the
+/// language.
+pub fn highlight_lines(language: &str, text: &str) -> Option<Vec<HighlightedLine>> {
+    let mut parser = ParseState::new(find_syntax(language)?);
+    let mut scopes = ScopeStack::new();
+    let mut names = HashMap::new();
+    let mut lines = Vec::new();
+    for line in LinesWithEndings::from(text) {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let mut pieces = HighlightedLine::new();
+        let mut cursor = 0;
+        if let Ok(operations) = parser.parse_line(line, &SYNTAX_SET) {
+            for (index, operation) in operations {
+                let end = index.min(body.len());
+                if end > cursor {
+                    push_piece(&mut pieces, &body[cursor..end], stack_name(&mut names, &scopes.scopes));
+                    cursor = end;
+                }
+                let _ = scopes.apply(&operation);
+            }
+        }
+        if cursor < body.len() {
+            push_piece(&mut pieces, &body[cursor..], stack_name(&mut names, &scopes.scopes));
+        }
+        lines.push(pieces);
+    }
+    // LinesWithEndings yields nothing for "" and no empty last line after a final "\n".
+    if text.is_empty() || text.ends_with('\n') {
+        lines.push(Vec::new());
+    }
+    Some(lines)
+}
+
+fn push_piece(pieces: &mut HighlightedLine, text: &str, name: Option<&'static str>) {
+    match pieces.last_mut() {
+        Some((last, last_name)) if *last_name == name => last.push_str(text),
+        _ => pieces.push((text.to_owned(), name)),
+    }
+}
+
 /// Turn the highlights overlapping `range` into gap-free style runs.
 ///
 /// `highlights` is ordered and non-overlapping, so the first candidate is found
@@ -492,5 +539,20 @@ mod tests {
         assert!(more.contains(&("COUNT", Some("function"))), "{more:?}");
         assert!(more.contains(&("FROM", Some("keyword"))), "{more:?}");
         assert!(!more.iter().any(|(_, name)| *name == Some("variable")), "{more:?}");
+    }
+
+    #[test]
+    fn highlighted_lines_spell_each_line() {
+        let lines = highlight_lines("js", "const x = 'a';\r\n\nlet y").unwrap();
+        let spelled: Vec<String> = lines
+            .iter()
+            .map(|line| line.iter().map(|(piece, _)| piece.as_str()).collect())
+            .collect();
+        assert_eq!(spelled, ["const x = 'a';\r", "", "let y"]);
+        assert!(lines[0].iter().any(|(piece, name)| piece == "const" && *name == Some("keyword")), "{lines:?}");
+        assert!(lines[0].windows(2).all(|pair| pair[0].1 != pair[1].1), "{lines:?}");
+        assert_eq!(highlight_lines("js", "x\n").unwrap().len(), 2);
+        assert_eq!(highlight_lines("js", "").unwrap().len(), 1);
+        assert!(highlight_lines("unknown-language", "x").is_none());
     }
 }

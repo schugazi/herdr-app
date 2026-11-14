@@ -1033,6 +1033,23 @@ fn module(inst: Instance, copy: u64) -> HostModule {
             request(Request::ReloadImage { path });
             Ok(HostValue::Null)
         })
+        // FORK: the editor's highlighter for code a mod draws itself (schu-changes' diff), on a worker
+        // thread since a long text takes a while to parse.
+        .async_function("highlight", |a| {
+            let language = a.string(0)?.to_owned();
+            let text = a.string(1)?.to_owned();
+            let (tx, rx) = async_channel::bounded(1);
+            let run = move || { let _ = tx.send_blocking(gpui_shell::highlight_lines(&language, &text)); };
+            #[cfg(not(test))]
+            std::thread::spawn(run);
+            // As in exec_future: GPUI tests cannot be woken from a foreign thread.
+            #[cfg(test)]
+            run();
+            Ok(async move {
+                let lines = rx.recv().await.map_err(|_| HostError::new("the highlight was lost"))?;
+                Ok(lines.map_or(HostValue::Null, |lines| to_host(&json!(lines))))
+            })
+        })
         .function("run", |a| {
             let name = a.string(0)?.to_owned();
             let args = a.get(1).map(from_host).unwrap_or(Value::Null);

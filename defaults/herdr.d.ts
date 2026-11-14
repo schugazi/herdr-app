@@ -48,6 +48,12 @@ export function playSound(sound: string): null;
  *  picture under it. */
 export function reloadImage(path: string): null;
 
+/** `text` highlighted as an EditorState in `language` would (its `language`: a grammar name or a file
+ *  extension), for code shown outside an editor: one entry per "\n"-separated line, each line's pieces
+ *  in order with the `syntax` name that colors them (null where none does), so they spell the line.
+ *  Null when no grammar knows the language. Runs off the UI thread. */
+export function highlight(language: string, text: string): Promise<[string, string | null][][] | null>;
+
 /**
  * Runs a command, the same ones keys.json binds (`herdr-app commands` lists them all with their
  * arguments). Structural commands fail while their machine's layout is unavailable.
