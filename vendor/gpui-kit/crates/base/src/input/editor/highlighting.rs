@@ -140,23 +140,41 @@ impl InputEditorStyle {
         let or = |value: Hsla, fallback: Hsla| if unset(value) { fallback } else { value };
 
         let foreground = or(self.foreground, colors.foreground);
-        let mut selection = self.selection;
-        if unset(selection) {
+        let background = or(self.background, colors.surface);
+        // Fork: the palette's own selection colour, as text views and the
+        // terminals use, rather than `accent` at 40%, which herdr maps to the
+        // theme's `hover` and so drew a near-invisible selection on a dark
+        // theme. It paints under the glyphs (base/element.rs), so it hides
+        // nothing, but the glyphs keep their ink: a palette whose selection
+        // the text can't be read on (Win98's navy under black text) keeps
+        // the old translucent accent.
+        let mut selection = or(self.selection, colors.selection);
+        if unset(self.selection) && contrast(foreground, background.blend(selection)) < 4.5 {
             selection = colors.accent;
-            // A selection must not hide the glyphs it selects.
             selection.a = 0.4;
         }
 
         Self {
             foreground,
             muted_foreground: or(self.muted_foreground, colors.muted_foreground),
-            background: or(self.background, colors.surface),
+            background,
             border: or(self.border, colors.border),
             selection,
             caret: or(self.caret, foreground),
             ..self.clone()
         }
     }
+}
+
+/// WCAG contrast ratio between two opaque colours (1 to 21).
+fn contrast(a: Hsla, b: Hsla) -> f32 {
+    let luminance = |c: Hsla| {
+        let c = c.to_rgb();
+        let lin = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    };
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
 impl Default for InputEditorStyle {
@@ -218,9 +236,22 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_stays_translucent_enough_to_read_through() {
-        let resolved = InputEditorStyle::default().resolved(&dark());
-        assert_eq!(resolved.selection.a, 0.4);
+    fn a_selection_takes_the_palettes_selection_colour() {
+        let mut tokens = dark();
+        tokens.colors.selection = hsla(0.4, 0.2, 0.25, 1.0);
+        let resolved = InputEditorStyle::default().resolved(&tokens);
+        assert_eq!(resolved.selection, tokens.colors.selection);
+    }
+
+    #[test]
+    fn a_selection_the_text_cant_be_read_on_keeps_the_translucent_accent() {
+        // Win98: black text on a white field, navy selection.
+        let mut tokens = dark();
+        tokens.colors.foreground = hsla(0., 0., 0., 1.0);
+        tokens.colors.surface = hsla(0., 0., 1., 1.0);
+        tokens.colors.selection = gpui::rgb(0x000080).into();
+        let resolved = InputEditorStyle::default().resolved(&tokens);
+        assert_eq!(resolved.selection, tokens.colors.accent.opacity(0.4));
     }
 
     #[test]
