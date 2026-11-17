@@ -141,13 +141,12 @@ impl InputEditorStyle {
 
         let foreground = or(self.foreground, colors.foreground);
         let background = or(self.background, colors.surface);
-        // Fork: the palette's own selection colour, as text views and the
-        // terminals use, rather than `accent` at 40%, which herdr maps to the
-        // theme's `hover` and so drew a near-invisible selection on a dark
-        // theme. It paints under the glyphs (base/element.rs), so it hides
-        // nothing, but the glyphs keep their ink: a palette whose selection
+        // The palette's own selection colour, so an input's highlight matches
+        // the terminal's and a text view's. The text paints after it, so the
+        // highlight cannot hide the glyphs it selects.
+        // Fork: but the glyphs keep their ink, so a palette whose selection
         // the text can't be read on (Win98's navy under black text) keeps
-        // the old translucent accent.
+        // upstream's old translucent accent.
         let mut selection = or(self.selection, colors.selection);
         if unset(self.selection) && contrast(foreground, background.blend(selection)) < 4.5 {
             selection = colors.accent;
@@ -209,7 +208,8 @@ mod tests {
         tokens.colors.muted_foreground = hsla(0., 0., 0.64, 1.0);
         tokens.colors.surface = hsla(0., 0., 0.04, 1.0);
         tokens.colors.border = hsla(0., 0., 0.15, 1.0);
-        tokens.colors.accent = hsla(0.6, 0.5, 0.5, 1.0);
+        tokens.colors.accent = hsla(0.1, 0.5, 0.5, 1.0);
+        tokens.colors.selection = hsla(0.6, 0.5, 0.5, 0.3);
         tokens
     }
 
@@ -223,6 +223,7 @@ mod tests {
         assert_eq!(resolved.muted_foreground, tokens.colors.muted_foreground);
         assert_eq!(resolved.background, tokens.colors.surface);
         assert_eq!(resolved.border, tokens.colors.border);
+        assert_eq!(resolved.selection, tokens.colors.selection);
         // The point of the change: every one of these was transparent, so an
         // input nothing projected onto painted its text in nothing at all.
         for colour in [
@@ -236,16 +237,19 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_takes_the_palettes_selection_colour() {
-        let mut tokens = dark();
-        tokens.colors.selection = hsla(0.4, 0.2, 0.25, 1.0);
+    fn a_selection_takes_the_palette_selection_token() {
+        let tokens = dark();
         let resolved = InputEditorStyle::default().resolved(&tokens);
+        // Not the accent: in a real palette that is a hover wash, often the
+        // same value as the surface, so a selected range looked unselected.
         assert_eq!(resolved.selection, tokens.colors.selection);
+        assert_ne!(resolved.selection, tokens.colors.accent);
+        assert_eq!(resolved.selection.a, tokens.colors.selection.a);
     }
 
     #[test]
     fn a_selection_the_text_cant_be_read_on_keeps_the_translucent_accent() {
-        // Win98: black text on a white field, navy selection.
+        // Fork. Win98: black text on a white field, navy selection.
         let mut tokens = dark();
         tokens.colors.foreground = hsla(0., 0., 0., 1.0);
         tokens.colors.surface = hsla(0., 0., 1., 1.0);
