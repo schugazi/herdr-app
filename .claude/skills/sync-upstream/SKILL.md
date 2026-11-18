@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Sync the fork with upstream, and the cores
 
-Two tracks, each assessed on its own every run. The app and herdr-core are released separately and their version numbers differ (app 0.1.15 needs only core 0.1.11 or newer), so the app's version never picks the core's.
+Two tracks, each assessed on its own every run. The app and herdr-core are released separately and their version numbers differ (app 0.1.16 needs only core 0.1.11 or newer), so the app's version never picks the core's.
 - **App track (steps 1–5):** only when upstream has a newer release tag than master holds.
 - **Core track (step 6):** its read-only assessment always runs. It changes cores only after a clean app track, meaning the app was already current (`UP-TO-DATE`) or its merge was built, tested, installed and published. After any app-track hard stop, step 6 only assesses and reports, and changes no core.
 
@@ -80,7 +80,7 @@ ssh multivac 'cd /d %USERPROFILE%\herdr-app && git fetch -q origin && git checko
 ssh multivac 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\herdr-app\scripts\fork-install.ps1 -Test'
 ```
 
-A full build takes a while, so run the last command in the background. The script installs only after the build is done and the tests pass, and only while Herdr is closed. When it stops with "Built. Quit Herdr", ask the user to quit Herdr, then run it again without `-Test` (the install takes seconds).
+A full build takes a while, so run the last command in the background. The script installs only after the build is done and the tests pass, and only while Herdr is closed. When it stops with "Built. Quit Herdr", ask the user to quit Herdr, then run it again without `-Test` (the install takes seconds). A session running in Herdr can't be read while it is closed: start a background wait on multivac that runs the install as soon as `herdr-app` exits, and tell the user to quit, then reopen Herdr after about 30 seconds. Pass that wait to PowerShell with `-EncodedCommand` or `-File` (a script fed on stdin stops at multi-line blocks), and without `2>&1` (cargo's warnings then fail it).
 
 A failure here installs nothing. Fixing it is still your job. If you can't, it's a hard stop: put multivac's checkout back with `git fetch -q origin && git checkout -q -B master origin/master`.
 
@@ -174,7 +174,7 @@ PY
 ### C. Update
 
 Give the user advance notice: which cores restart, that running terminals keep running, and that the app reconnects to each core. Then update every `BELOW` machine, pinned to the target, each through its own entry point. Never use `--force`. Without it, `hc update --version` refuses another generation and never replaces an installed binary that is already that version or newer. It still restarts an older core that is running on top of it.
-- Windows: `ssh multivac hc update --version $T`
+- Windows, with Herdr open on multivac: `ssh multivac hc update --version $T`. The elevated SSH login installs the target and stops the old core, then fails `unavailable` ("refusing to start an elevated Windows core over SSH"); the open app restarts the core within seconds, so go on to D. With Herdr closed, the core starts at the target when Herdr next opens.
 - mycroftxxx, as a transient unit through `hc-clean` from `~`: `systemd-run --user --wait --collect -p WorkingDirectory=$HOME -p UnsetEnvironment=HC_SOCKET -E HC_SESSION=default ~/.local/bin/hc-clean update --version $T`
 - WSL, through Windows' `ssh wsl`, from `~`: `ssh multivac "ssh wsl \"cd ~ && herdr-core update --version $T\""`
 
