@@ -287,12 +287,12 @@ impl Grid {
     /// `fit` for the pane's size on screen: once the pane's size differs from the screen's,
     /// the pane's size then goes out SETTLE later, if it still differs (back to the
     /// screen's size meanwhile, nothing goes out); true while one waits, so the caller
-    /// draws again. A layout can be wrong for a frame or two: a space switch draws the new
-    /// space with the last one's side panels until the mod that remembers them per space
-    /// restores its own, and each size that went out would have the program (Claude Code)
-    /// redraw its whole screen, twice. Until then the screen keeps its old size in the
-    /// pane. Further changes while one waits don't restart it, so a drag still resizes the
-    /// program every SETTLE; a gap of SETTLE in the prepaints does (the pane was hidden), so
+    /// draws again. A layout can be wrong for a frame or two: a tab or space switch the app
+    /// makes alone draws the new tab with the last one's side panels until the mod that
+    /// remembers them per tab restores its own, and each size that went out would have the
+    /// program (Claude Code) redraw its whole screen, twice. Until then the screen keeps its
+    /// old size in the pane. Further changes while one waits don't restart it, so a drag
+    /// still resizes the program every SETTLE; a gap of SETTLE in the prepaints does (the pane was hidden), so
     /// a pane shown again waits afresh. Limit: at under 10 frames a second every wait
     /// restarts, so a new size waits for a faster frame (an unfocused window still draws
     /// at 30). Sizes go out at once before the terminal attaches (its first), and with a

@@ -200,9 +200,11 @@ impl AppWindow {
     /// after the window changed size draws its old screens, then jumps once the programs
     /// redraw. Once the window settles (the same at two ticks), the shown space's other
     /// tabs are sized as their panes would be, so the programs redraw out of sight.
-    /// Other spaces' tabs are left alone: side panels a layout's mods remember per space
-    /// give each space its own tab area, so sizing them to this one's would resize their
-    /// programs on every switch, once out of sight and once more, on screen, on return.
+    /// Other spaces' tabs are left alone: side panels a layout's mods remember per tab
+    /// (`~/herdr-app-mods`' `schu-tabs`) give each tab its own area, so sizing them to this
+    /// one's would resize their programs on every switch, once out of sight and once more,
+    /// on screen, on return. Limit: the shown space's other tabs still get this tab's area,
+    /// so one with another side panel redraws that way when shown; skipping them too ends it.
     pub(super) fn fit_hidden_tabs(&mut self, window: &Window, cx: &App) {
         let Some((_, area)) = self.context_area() else { return };
         let cell = crate::terminal::cell_size(window);
