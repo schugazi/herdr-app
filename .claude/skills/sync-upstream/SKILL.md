@@ -37,7 +37,7 @@ if git merge-base --is-ancestor upstream/stable HEAD; then echo "UP-TO-DATE $TAG
 A non-zero exit is a hard stop. `UP-TO-DATE` counts only once the installed app is `origin/master`'s build. multivac's checkout must be on it, and the installed app must be that checkout's last build. Anything else is a hard stop:
 
 ```bash
-V=$(mktemp) && ~/voice-hub/dispatcher/herdr2-versions --json >"$V" && python3 -I - "$(git -C ~/herdr-app rev-parse origin/master)" "$V" <<'PY'
+V=$(mktemp) && ~/switchboard/dispatcher/herdr2-versions --json >"$V" && python3 -I - "$(git -C ~/herdr-app rev-parse origin/master)" "$V" <<'PY'
 import json, sys
 head, path = sys.argv[1], sys.argv[2]
 r = json.load(open(path))
@@ -129,10 +129,10 @@ A `STOP` (or any non-zero exit) means no core is changed. Report it; a generatio
 
 ### B. Check every machine
 
-Check every machine against the target. This uses `~/voice-hub/dispatcher/herdr2-versions`, which reads each core's installed and running versions without an `hc` command (any `hc` command starts a core when none is running). It fails closed: every one of the three machines must be there, with a valid installed version and exactly one running core with a valid version. Set `T` to the target, then:
+Check every machine against the target. This uses `~/switchboard/dispatcher/herdr2-versions`, which reads each core's installed and running versions without an `hc` command (any `hc` command starts a core when none is running). It fails closed: every one of the three machines must be there, with a valid installed version and exactly one running core with a valid version. Set `T` to the target, then:
 
 ```bash
-V=$(mktemp) && ~/voice-hub/dispatcher/herdr2-versions --json >"$V" && python3 -I - "$T" "$V" <<'PY'
+V=$(mktemp) && ~/switchboard/dispatcher/herdr2-versions --json >"$V" && python3 -I - "$T" "$V" <<'PY'
 import json, re, sys
 t, path = sys.argv[1], sys.argv[2]
 key = lambda v: tuple(map(int, v.split("."))) if isinstance(v, str) and re.fullmatch(r"\d+\.\d+\.\d+", v) else None
