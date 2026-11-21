@@ -10,7 +10,7 @@ Two tracks, each assessed on its own every run. The app and herdr-core are relea
 - **App track (steps 1–5):** only when upstream has a newer release tag than master holds.
 - **Core track (step 6):** its read-only assessment always runs. It changes cores only after a clean app track, meaning the app was already current (`UP-TO-DATE`) or its merge was built, tested, installed and published. After any app-track hard stop, step 6 only assesses and reports, and changes no core.
 
-**When this runs is decided outside the skill.** The dot or the user starts it, behind the dot's own gates (idle or overnight, one update at a time, advance notice). This skill adds no idle, activity or time gates of its own. Within the run:
+**When this runs is decided outside the skill.** The user starts it. This skill adds no idle, activity or time gates of its own. Within the run:
 - **Advance notice:** before the first disruptive step (asking to quit Herdr in step 4, the first core update in step 6), tell the user what will restart and what it does.
 - **Permissions:** a denied permission or a dialog the user declines is their answer. Stop that step and report it; never route around it with another command, `--force` or a retry.
 
