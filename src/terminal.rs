@@ -61,10 +61,22 @@ pub fn hsla(c: Rgb) -> Hsla {
     Rgba { r: c.0 as f32 / 255.0, g: c.1 as f32 / 255.0, b: c.2 as f32 / 255.0, a: 1.0 }.into()
 }
 
+thread_local! {
+    /// Each other machine's host name (`machine.list`'s `host`) by its name, for `file:` URLs its
+    /// terminals write (`ls --hyperlink` names the host). Set by the window as it lists machines.
+    static MACHINE_HOSTS: RefCell<HashMap<String, String>> = RefCell::default();
+}
+
+pub fn set_machine_hosts(hosts: HashMap<String, String>) {
+    MACHINE_HOSTS.set(hosts);
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum LinkTarget {
     External(links::Target),
     Terminal(String),
+    /// A path in a terminal on another machine, for mods to find there (`hand_link_to_mods`).
+    Remote(String),
 }
 
 pub enum TerminalEvent {
@@ -917,6 +929,11 @@ impl TerminalView {
         }
     }
 
+    /// The selected text, as a copy would take it.
+    pub fn selection_text(&self) -> Option<String> {
+        self.grid.borrow().vt.selection_text()
+    }
+
     pub fn selection(&self) -> Option<vt::SelectionPositions> {
         self.grid.borrow().vt.selection_positions()
     }
@@ -1215,27 +1232,72 @@ impl TerminalView {
         let g = self.grid.borrow();
         let (x, y) = local(&g, pos);
         let (col, row) = (x / f32::from(g.cell.width), y / f32::from(g.cell.height));
+        // On another machine, what a `file:` URL may call it: its name and its host name, which differ for
+        // multivac-wsl (host multivac).
+        let machine = self.address.split_once('/').map(|(m, _)| m.to_owned());
+        let host = machine.as_deref().and_then(|m| MACHINE_HOSTS.with_borrow(|h| h.get(m).cloned()));
+        let hosts: Vec<&str> = machine.iter().chain(host.iter()).map(String::as_str).collect();
         let mut target = None;
         let hit = g.vt.link_at(col as u16, row as u16, |text, at, joined| {
+            let found = if self.remote() {
+                links::find_remote(text, at, &hosts).and_then(|(range, link)| match link {
+                    links::Remote::Url(url) => Some((range, LinkTarget::External(links::Target::Url(url)))),
+                    // Unchecked, so a live terminal's address (`box.lan/t1`), which reads as a path too, wins.
+                    links::Remote::Path(path) => self.address_at(text, at).is_none().then_some((range, LinkTarget::Remote(path))),
+                })
+            } else {
+                links::find(text, at).and_then(|range| {
+                    let link = links::resolve(&text[range.clone()], self.cwd.as_deref())?;
+                    Some((range, LinkTarget::External(link)))
+                })
+            };
             // In lines joined back together only a file that exists proves the join right.
-            if let Some(range) = links::find(text, at)
-                && let Some(link) = links::resolve(&text[range.clone()], self.cwd.as_deref())
-                && (!joined || matches!(link, links::Target::File(_)))
+            if let Some((range, found)) = found
+                && (!joined || matches!(found, LinkTarget::External(links::Target::File(_))))
             {
-                target = Some(LinkTarget::External(link));
+                target = Some(found);
                 return Some(range);
             }
             if joined {
                 return None;
             }
-            let range = links::word(text, at)?;
-            let address = crate::mods::terminal_address(&text[range.clone()], &self.address)?;
+            let (range, address) = self.address_at(text, at)?;
             target = Some(LinkTarget::Terminal(address));
             Some(range)
         })?;
         // OSC 8 links bypass text detection.
-        let target = target.or_else(|| links::resolve(&hit.target, self.cwd.as_deref()).map(LinkTarget::External))?;
+        let target = target.or_else(|| {
+            if !self.remote() {
+                return links::resolve(&hit.target, self.cwd.as_deref()).map(LinkTarget::External);
+            }
+            Some(match links::resolve_remote(&hit.target, &hosts) {
+                links::Remote::Url(url) => LinkTarget::External(links::Target::Url(url)),
+                links::Remote::Path(path) => LinkTarget::Remote(path),
+            })
+        })?;
         Some((target, hit.spans))
+    }
+
+    /// The terminal runs on another machine (`box/t3`): its paths aren't this computer's.
+    fn remote(&self) -> bool {
+        self.address.contains('/')
+    }
+
+    /// A live terminal's address in `text` at byte `at` (`t1`, `box/t2`), and where it is.
+    fn address_at(&self, text: &str, at: usize) -> Option<(std::ops::Range<usize>, String)> {
+        let range = links::word(text, at)?;
+        let address = crate::mods::terminal_address(&text[range.clone()], &self.address)?;
+        Some((range, address))
+    }
+
+    /// A path clicked in a terminal on another machine. Only mods can look for it there (`exec` with `on`),
+    /// so it goes to them as the shared `herdr.link`: {id, terminal, path (as `Remote::Path`), cwd (the
+    /// terminal's folder there, or null), at (ms since the epoch, this computer's clock)}.
+    fn hand_link_to_mods(&self, path: String) {
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let cwd = self.cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let link = json!({ "id": format!("{at} {}", self.address), "terminal": self.address, "path": path, "cwd": cwd, "at": at });
+        crate::mods::set_shared("herdr.link".into(), link);
     }
 
     fn start_selection(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
@@ -2606,6 +2668,7 @@ impl Render for TerminalView {
                     match target {
                         LinkTarget::External(target) => links::open(&target),
                         LinkTarget::Terminal(address) => cx.emit(TerminalEvent::Peek(address)),
+                        LinkTarget::Remote(path) => this.hand_link_to_mods(path),
                     }
                     return;
                 }

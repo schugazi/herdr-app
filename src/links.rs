@@ -6,9 +6,11 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// Ghostty's default link pattern (`src/config/url.zig`), unchanged.
+/// Ghostty's default link pattern (`src/config/url.zig`), except that a scheme
+/// never starts inside a word or path (`Makefile:12`, `src/build-file:12` and
+/// `src/file:12` aren't the URL `file:12`).
 static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    let schemes = r"https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:";
+    let schemes = r"(?<![\w\-/])(?:https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:)";
     let ipv6 = r"(?:\[[:0-9a-fA-F]+(?:[:0-9a-fA-F]*)+\](?::[0-9]+)?)";
     let scheme_chars = r"[\w\-.~:/?#@!$&*+,;=%]";
     let path_chars = r"[\w\-.~:\/?#@!$&*+;=%]";
@@ -28,9 +30,25 @@ static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!("{scheme_url}|{rooted_path}|{bare_path}")).expect("link pattern")
 });
 
+/// Names Ghostty's pattern misses, which only a terminal on another machine
+/// links, since only a lookup there can tell whether they're files: a file name
+/// with an extension (`README.md`, `main.rs:12`) and a path with a line but no
+/// extension (`src/Makefile:12`). Not a bare name with a line alone, which
+/// reads like `localhost:8080` or `12:30`.
+static BARE: LazyLock<Regex> = LazyLock::new(|| {
+    let line = r"(?::\d+(?::\d+)?)";
+    let named = format!(r"[\w][\w\-]*(?:\.[\w\-]+)*\.[A-Za-z][A-Za-z0-9]{{0,9}}{line}?");
+    let slashed = format!(r"[\w][\w\-.]*(?:/[\w\-.]+)+{line}");
+    Regex::new(&format!(r"(?<![\w.~/$@:\-])(?:{named}|{slashed})(?![\w/@\-])")).expect("bare file pattern")
+});
+
 /// The link in `text` that covers byte `at`.
 pub fn find(text: &str, at: usize) -> Option<Range<usize>> {
-    for m in PATTERN.find_iter(text) {
+    find_in(&PATTERN, text, at)
+}
+
+fn find_in(pattern: &Regex, text: &str, at: usize) -> Option<Range<usize>> {
+    for m in pattern.find_iter(text) {
         let m = m.ok()?;
         if m.start() > at {
             return None;
@@ -72,13 +90,68 @@ pub enum Target {
     File(PathBuf),
 }
 
+fn has_scheme(link: &str) -> bool {
+    link.split_once(':').is_some_and(|(s, _)| {
+        s.len() > 1 && s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    })
+}
+
+/// What a link in a terminal on another machine points to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Remote {
+    /// Opened here, as any URL.
+    Url(String),
+    /// A path on that machine as the terminal showed it (relative, `~/`, with
+    /// `:line`), or a `file:` URL's path decoded: unchecked, since only that
+    /// machine can tell whether it's there.
+    Path(String),
+}
+
+/// The link at byte `at` in the text of a terminal on another machine, and
+/// what it points to: Ghostty's pattern (URLs, and paths it knows), else a
+/// name only a lookup there can find (`BARE`, always a path: `README.md:12`
+/// reads like a scheme but isn't one). A `BARE` match holding Ghostty's is the
+/// whole token, so every part of `src/build-file:12` names the same path.
+/// `hosts`: what a `file:` URL may call that machine (`resolve_remote`).
+pub fn find_remote(text: &str, at: usize, hosts: &[&str]) -> Option<(Range<usize>, Remote)> {
+    let bare = find_in(&BARE, text, at);
+    match find(text, at) {
+        Some(g) if !bare.as_ref().is_some_and(|b| b.start <= g.start && g.end <= b.end && *b != g) => {
+            let link = resolve_remote(&text[g.clone()], hosts);
+            Some((g, link))
+        }
+        _ => bare.map(|b| (b.clone(), Remote::Path(text[b].to_owned()))),
+    }
+}
+
+/// A link of a terminal on another machine (Ghostty's match, or an OSC 8
+/// target): a `file:` URL is a path there when its authority is none,
+/// `localhost` or one of `hosts`, the names that machine goes by (`ls
+/// --hyperlink` writes its host name); any other URL, a file URL naming
+/// another host too, stays a URL. Anything without a scheme is a path.
+pub fn resolve_remote(link: &str, hosts: &[&str]) -> Remote {
+    if !has_scheme(link) {
+        return Remote::Path(link.to_owned());
+    }
+    match file_url(link) {
+        Some((host, path)) if host.is_empty() || host.eq_ignore_ascii_case("localhost") || names_host(host, hosts) => Remote::Path(path),
+        _ => Remote::Url(link.to_owned()),
+    }
+}
+
+/// `authority` is one of `hosts` exactly, or the short name of one given in
+/// full (`build` for `build.lan`); never the reverse, so a short `build`
+/// doesn't claim `build.other.example`.
+fn names_host(authority: &str, hosts: &[&str]) -> bool {
+    hosts.iter().any(|h| {
+        authority.eq_ignore_ascii_case(h) || h.split_once('.').is_some_and(|(short, _)| !short.is_empty() && authority.eq_ignore_ascii_case(short))
+    })
+}
+
 /// What a link opens. File paths count only when they exist here; relative
 /// ones need the terminal's folder.
 pub fn resolve(link: &str, cwd: Option<&Path>) -> Option<Target> {
-    let scheme = link.split_once(':').is_some_and(|(s, _)| {
-        s.len() > 1 && s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-    });
-    if scheme {
+    if has_scheme(link) {
         // Windows can't open a file URL whose path is percent-encoded, the way programs write them.
         if let Some(path) = file_url_path(link).filter(|p| p.exists()) {
             return Some(Target::File(path));
@@ -117,12 +190,23 @@ pub fn resolve(link: &str, cwd: Option<&Path>) -> Option<Target> {
 
 /// The path a `file:` URL names on this computer, percent-decoded.
 fn file_url_path(link: &str) -> Option<PathBuf> {
-    let rest = link.strip_prefix("file://")?;
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    // Another host's file, or no path.
-    if !rest.starts_with('/') {
+    let (host, path) = file_url(link)?;
+    // Another host's file.
+    if !host.is_empty() && host != "localhost" {
         return None;
     }
+    // `/C:/Users/...` names `C:\Users\...`.
+    if cfg!(windows) && path.as_bytes().get(2) == Some(&b':') && path.as_bytes()[1].is_ascii_alphabetic() {
+        return Some(PathBuf::from(path[1..].replace('/', "\\")));
+    }
+    Some(PathBuf::from(path))
+}
+
+/// A `file:` URL's host (empty when none) and path as written (`/home/me/a b.txt`), percent-decoded.
+fn file_url(link: &str) -> Option<(&str, String)> {
+    let rest = link.strip_prefix("file://")?;
+    // No path.
+    let (host, rest) = rest.split_at(rest.find('/')?);
     let rest = rest.split(['?', '#']).next()?;
     let mut bytes = Vec::with_capacity(rest.len());
     let mut i = 0;
@@ -135,12 +219,7 @@ fn file_url_path(link: &str) -> Option<PathBuf> {
             i += 1;
         }
     }
-    let path = String::from_utf8(bytes).ok()?;
-    // `/C:/Users/...` names `C:\Users\...`.
-    if cfg!(windows) && path.as_bytes().get(2) == Some(&b':') && path.as_bytes()[1].is_ascii_alphabetic() {
-        return Some(PathBuf::from(path[1..].replace('/', "\\")));
-    }
-    Some(PathBuf::from(path))
+    Some((host, String::from_utf8(bytes).ok()?))
 }
 
 /// Hands the target to the system's default handler.
@@ -405,6 +484,76 @@ mod tests {
             assert_eq!(resolve("src/main.rs.", Some(&dir)), Some(Target::File(dotted)));
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn remote_links_keep_paths_unchecked_and_urls_as_urls() {
+        for (link, expected) in [
+            ("src/gone.rs:42", Remote::Path("src/gone.rs:42".into())),
+            ("~/notes/a.md.", Remote::Path("~/notes/a.md.".into())),
+            ("/home/me/x.rs", Remote::Path("/home/me/x.rs".into())),
+            ("file:///home/me/a%20b.png", Remote::Path("/home/me/a b.png".into())),
+            ("file://localhost/home/me/x.rs", Remote::Path("/home/me/x.rs".into())),
+            // `ls --hyperlink` names the machine's host, which may differ from its name (multivac-wsl on multivac).
+            ("file://multivac/home/me/x.rs", Remote::Path("/home/me/x.rs".into())),
+            ("file://MULTIVAC/home/me/x.rs", Remote::Path("/home/me/x.rs".into())),
+            ("file://multivac-wsl/home/me/x.rs", Remote::Path("/home/me/x.rs".into())),
+            // Only the names given: a longer name isn't proof of the same host.
+            ("file://multivac.lan/home/me/x.rs", Remote::Url("file://multivac.lan/home/me/x.rs".into())),
+            ("file://box/home/me/x.rs", Remote::Url("file://box/home/me/x.rs".into())),
+            ("file://multivacx/home/me/x.rs", Remote::Url("file://multivacx/home/me/x.rs".into())),
+            // An explicit scheme stays a URL, digits at its end or not (the line suffix is text detection's).
+            ("urn:isbn:0451450523", Remote::Url("urn:isbn:0451450523".into())),
+            ("file:12", Remote::Url("file:12".into())),
+            ("https://a.com/x", Remote::Url("https://a.com/x".into())),
+            ("https://a.com:8080", Remote::Url("https://a.com:8080".into())),
+            ("vscode://file/home/me/x.rs:3", Remote::Url("vscode://file/home/me/x.rs:3".into())),
+        ] {
+            assert_eq!(resolve_remote(link, &["multivac-wsl", "multivac"]), expected, "{link}");
+        }
+        // A host given in full also answers to its short name, never the reverse.
+        assert_eq!(resolve_remote("file://build/x.rs", &["box", "build.lan"]), Remote::Path("/x.rs".into()));
+        assert_eq!(resolve_remote("file://build.lan/x.rs", &["build.lan"]), Remote::Path("/x.rs".into()));
+        let other = "file://build.other.example/x.rs";
+        assert_eq!(resolve_remote(other, &["build"]), Remote::Url(other.into()));
+        assert_eq!(resolve_remote(other, &["build.lan"]), Remote::Url(other.into()));
+    }
+
+    #[test]
+    fn remote_terminals_also_link_names_only_a_lookup_there_can_find() {
+        let at = |text: &str, word: &str| {
+            let i = text.find(word).unwrap();
+            find_remote(text, i + word.len() / 2, &[]).map(|(r, link)| (text[r].to_owned(), link))
+        };
+        let path = |s: &str| Some((s.to_owned(), Remote::Path(s.to_owned())));
+        assert_eq!(at("see README.md:12 for it", "README"), path("README.md:12"));
+        assert_eq!(at("see README.md.", "README"), path("README.md"));
+        assert_eq!(at("app.py (src/app.py:12)", "app.py"), path("app.py"));
+        assert_eq!(at("app.py (src/app.py:12)", "src/"), path("src/app.py:12"));
+        assert_eq!(at("build: src/Makefile:12:3", "Makefile"), path("src/Makefile:12:3"));
+        // Every part of a path names the whole of it, never a URL inside it.
+        for word in ["src", "build", "file", ":12"] {
+            assert_eq!(at("see src/build-file:12 now", word), path("src/build-file:12"), "{word}");
+        }
+        assert_eq!(at("see src/file:12", "file"), path("src/file:12"));
+        assert_eq!(at("x file://host/a b", "host"), Some(("file://host/a".into(), Remote::Url("file://host/a".into()))));
+        assert_eq!(at("open ~/x/notes.md now", "notes"), path("~/x/notes.md"));
+        assert_eq!(at("at https://a.com/x ok", "a.com"), Some(("https://a.com/x".into(), Remote::Url("https://a.com/x".into()))));
+        for (text, word) in [
+            ("Makefile:12", "Makefile"),
+            ("on localhost:8080 now", "localhost"),
+            ("at 12:30 today", "12:30"),
+            ("version v1.2.3", "v1.2.3"),
+            ("mail me@example.com", "example"),
+            ("src/Makefile alone", "Makefile"),
+        ] {
+            assert_eq!(at(text, word), None, "{text}");
+        }
+        // Text detection on this computer is Ghostty's, but a scheme never starts inside a word.
+        assert_eq!(find("Makefile:12", 9), None);
+        assert_eq!(find("README.md:12", 2), None);
+        assert_eq!(find("src/build-file:12", 12), None);
+        assert_eq!(find("src/file:12", 6), None);
     }
 
     #[test]

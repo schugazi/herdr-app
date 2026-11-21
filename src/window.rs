@@ -1499,7 +1499,7 @@ impl AppWindow {
             self.tell_term(&view, &address, cx);
             mods::track_pane_view(id.clone(), &view);
             let (block, addr) = (id.clone(), address.clone());
-            let sub = cx.subscribe_in(&view, window, move |this, _, ev: &TerminalEvent, window, cx| match ev {
+            let sub = cx.subscribe_in(&view, window, move |this, term_view, ev: &TerminalEvent, window, cx| match ev {
                 TerminalEvent::Peek(address) => this.peek_terminal(address, window, cx),
                 TerminalEvent::TitleChanged => this.publish(cx),
                 TerminalEvent::ScrollChanged => {
@@ -1509,7 +1509,10 @@ impl AppWindow {
                 TerminalEvent::SelectionChanged => this.publish_selection(&addr, window, cx),
                 TerminalEvent::Ended => this.terminal_ended(&block, window, cx),
                 TerminalEvent::ContextMenu(at) => {
-                    this.open_menu("pane", json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr }), Some(*at), window, cx)
+                    // The clicked terminal's selected text, for a menu item on it (`~/herdr-app-mods`' Open in Files).
+                    let selection = term_view.read(cx).selection_text();
+                    let target = json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr, "selection": selection });
+                    this.open_menu("pane", target, Some(*at), window, cx)
                 }
                 TerminalEvent::Notice { title, body } => {
                     let spec = json!({"kind":"toast", "notification":{"title":title, "body":body, "level":"error"}});
@@ -2090,6 +2093,7 @@ impl AppWindow {
             // Temporary machines are agents' short-lived sandboxes: the app leaves them out.
             let kept = || machines["machines"].as_array().into_iter().flatten().filter(|m| m["temporary"] != true);
             let states = kept().filter_map(|m| Some((m["name"].as_str()?, m["state"].as_str()?))).collect::<HashMap<_, _>>();
+            crate::terminal::set_machine_hosts(kept().filter_map(|m| Some((m["name"].as_str()?.to_owned(), m["host"].as_str()?.to_owned()))).collect());
             for machine in kept() {
                 let Some(name) = machine["name"].as_str() else { continue };
                 let state = machine["state"].as_str().unwrap_or("unavailable");
